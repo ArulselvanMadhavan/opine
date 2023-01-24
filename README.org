@@ -1,0 +1,2 @@
+* OPTAttention
+[[https://github.com/huggingface/transformers/blob/main/src/transformers/models/opt/modeling_opt.py#L120][OPT]]
