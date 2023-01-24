@@ -1,0 +1,4 @@
+(executable
+ (public_name opine)
+ (name main)
+ (libraries opine pyre-ast cmdliner stdio sexplib))
