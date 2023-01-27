@@ -1,2 +1,3 @@
 (library
- (name opine))
+ (name opine)
+ (libraries base stdio pyre-ast))

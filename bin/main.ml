@@ -48,7 +48,8 @@ let parse_expression filename =
       Parser.Concrete.parse_expression ~context content)
   in
   handle_result result ~f:(fun ast ->
-    Format.printf "%a\n" Sexplib.Sexp.pp_hum (Concrete.Expression.sexp_of_t ast))
+    Format.printf "%a\n" Sexplib.Sexp.pp_hum (Concrete.Expression.sexp_of_t ast);
+    Format.printf "%s\n" (Opine.Unparse.expr ast))
 ;;
 
 let help_sections =
