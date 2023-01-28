@@ -1,1 +1,1 @@
-import torch
+lambda x: x + 1

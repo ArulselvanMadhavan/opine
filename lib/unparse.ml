@@ -27,19 +27,31 @@ module Precedence = struct
     | Power
     | Await
     | Atom
+  [@@deriving compare, sexp, hash]
 end
 
 let default_hash_size = 64
 
-let expr_precedences =
+let expr_precedences : (Concrete.Expression.t, Precedence.t) Base.Hashtbl.t =
   Base.Hashtbl.create ~size:default_hash_size (module Concrete.Expression)
 ;;
 
-type state =
-  { source : string list
-  ; indent : int
-  ; expr_precedences : (Concrete.Expression.t, Precedence.t) Base.Hashtbl.t
-  }
+module State = struct
+  open Base
+
+  type t =
+    { source : string list
+    ; indent : int
+    ; expr_precedences : (Concrete.Expression.t, Precedence.t) Hashtbl.t
+    }
+  [@@deriving make]
+
+  let default = { source = []; indent = 0; expr_precedences }
+end
+
+let require_parens node_prec eval_prec content =
+  if node_prec > eval_prec then "(" ^ content ^ ")" else content
+;;
 
 let bin_op = function
   | Add -> "+"
@@ -52,13 +64,13 @@ let constant = function
   | _ -> noop
 ;;
 
-let rec arg a =
+let rec arg s a =
   let open Concrete.Argument in
   let id = Concrete.Identifier.to_string a.identifier in
-  let annot = Option.fold ~none:"" ~some:(fun a -> ":" ^ expr a) a.annotation in
+  let annot = Option.fold ~none:"" ~some:(fun a -> ":" ^ expr s a) a.annotation in
   id ^ annot
 
-and arguments xs =
+and arguments s xs =
   let open Concrete.Arguments in
   let all_args = xs.posonlyargs @ xs.args in
   let defaults = Array.of_list xs.defaults in
@@ -68,13 +80,13 @@ and arguments xs =
   let process_arg idx a =
     (* Check comma *)
     if idx > 0 then acc := !acc ^ ", ";
-    acc := !acc ^ arg a;
+    acc := !acc ^ arg s a;
     (* Check default arg *)
     if idx >= defaults_start_idx
     then (
       let d_idx = idx - defaults_start_idx in
       let d_expr = defaults.(d_idx) in
-      acc := !acc ^ "=" ^ expr d_expr);
+      acc := !acc ^ "=" ^ expr s d_expr);
     (* check pos only *)
     if idx == pos_only_idx then acc := !acc ^ ", /"
   in
@@ -85,10 +97,22 @@ and statement = function
   | Import _ -> ""
   | _ -> noop
 
-and expr = function
-  | BinOp { left; right; op; _ } -> expr left ^ " " ^ bin_op op ^ " " ^ expr right
+and expr (s : State.t) e =
+  let open Base in
+  match e with
+  | BinOp { left; right; op; _ } -> expr s left ^ " " ^ bin_op op ^ " " ^ expr s right
   | Constant { value; _ } -> constant value
-  | Lambda { args; body; _ } -> "lambda" ^ " " ^ arguments args ^ ": " ^ expr body
+  | Lambda { args; body; _ } as node ->
+    let content = "lambda" ^ " " ^ arguments s args ^ ": " in
+    (* check body *)
+    Hashtbl.update s.expr_precedences body ~f:(fun _ -> Precedence.Test);
+    let content = content ^ expr s body in
+    (* check parens *)
+    let node_prec =
+      Option.value (Hashtbl.find s.expr_precedences node) ~default:Precedence.Test
+    in
+    let eval_prec = Precedence.Test in
+    require_parens node_prec eval_prec content
   | Name { id; _ } -> Concrete.Identifier.to_string id
   | _ -> noop
 

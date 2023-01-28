@@ -49,7 +49,7 @@ let parse_expression filename =
   in
   handle_result result ~f:(fun ast ->
     Format.printf "%a\n" Sexplib.Sexp.pp_hum (Concrete.Expression.sexp_of_t ast);
-    Format.printf "%s\n" (Opine.Unparse.expr ast))
+    Format.printf "%s\n" (Opine.Unparse.expr Opine.Unparse.State.default ast))
 ;;
 
 let help_sections =
