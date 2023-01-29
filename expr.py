@@ -1,1 +1,1 @@
-lambda x: x + 1
+from idiom.ml.torch.nn import setup_for_evaluation

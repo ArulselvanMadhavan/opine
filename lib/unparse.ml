@@ -1,8 +1,8 @@
-open PyreAst
-open Concrete.Expression
-open Concrete.Constant
-open Concrete.BinaryOperator
-open Concrete.Statement
+open PyreAst.Concrete
+(* open Concrete.Expression *)
+(* open Concrete.Constant *)
+(* open Concrete.BinaryOperator *)
+(* open Concrete.Statement *)
 
 let noop = "noop"
 
@@ -32,46 +32,59 @@ end
 
 let default_hash_size = 64
 
-let expr_precedences : (Concrete.Expression.t, Precedence.t) Base.Hashtbl.t =
-  Base.Hashtbl.create ~size:default_hash_size (module Concrete.Expression)
+let expr_precedences : (Expression.t, Precedence.t) Base.Hashtbl.t =
+  Base.Hashtbl.create ~size:default_hash_size (module Expression)
 ;;
 
 module State = struct
   open Base
 
   type t =
-    { source : string list
+    { source : string
     ; indent : int
-    ; expr_precedences : (Concrete.Expression.t, Precedence.t) Hashtbl.t
+    ; expr_precedences : (Expression.t, Precedence.t) Hashtbl.t
     }
   [@@deriving make]
 
-  let default = { source = []; indent = 0; expr_precedences }
+  let default = { source = ""; indent = 0; expr_precedences }
 end
+
+(* let fill s text = *)
 
 let require_parens node_prec eval_prec content =
   if node_prec > eval_prec then "(" ^ content ^ ")" else content
 ;;
 
-let bin_op = function
+let fill (s : State.t) text =
+  let newline = if Base.String.is_empty s.source then "" else "\n" in
+  let indents = Base.List.init s.indent ~f:(fun _ -> "    ") in
+  let indents = Base.String.concat indents in
+  newline ^ indents ^ text
+;;
+
+let bin_op o =
+  let open BinaryOperator in
+  match o with
   | Add -> "+"
   | Mult -> "*"
   | _ -> noop
 ;;
 
-let constant = function
+let constant c =
+  let open Constant in
+  match c with
   | Integer i -> Int.to_string i
   | _ -> noop
 ;;
 
 let rec arg s a =
-  let open Concrete.Argument in
-  let id = Concrete.Identifier.to_string a.identifier in
+  let open Argument in
+  let id = Identifier.to_string a.identifier in
   let annot = Option.fold ~none:"" ~some:(fun a -> ":" ^ expr s a) a.annotation in
   id ^ annot
 
 and arguments s xs =
-  let open Concrete.Arguments in
+  let open Arguments in
   let all_args = xs.posonlyargs @ xs.args in
   let defaults = Array.of_list xs.defaults in
   let defaults_start_idx = List.length all_args - List.length xs.defaults in
@@ -93,9 +106,25 @@ and arguments s xs =
   Base.List.iteri all_args ~f:process_arg;
   !acc
 
-and statement = function
-  | Import _ -> ""
-  | _ -> noop
+and import_alias ia =
+  let open ImportAlias in
+  Identifier.to_string ia.name
+  ^ Option.fold ~none:"" ~some:(fun asn -> " as " ^ Identifier.to_string asn) ia.asname
+and process_names names =
+      let aliases = Base.List.map names ~f:import_alias in
+    Base.String.concat ~sep:", " aliases
+and statement (s : State.t) stmt =
+  let open Statement in
+  match stmt with
+  | Import { names ; _ } ->
+    fill s "import " ^ process_names names 
+  | ImportFrom {names; level;module_;_} ->
+    (* self.write("." * (node.level or 0)) *)
+    let dots = Base.List.init level ~f:(fun _ -> ".") in
+    let dots = Base.String.concat dots in
+    let mod_name = Option.fold ~none:"" ~some:(Identifier.to_string) module_ in
+    fill s "from " ^ dots ^ mod_name ^ " import " ^ process_names names
+  | _x -> noop
 
 and expr (s : State.t) e =
   let open Base in
@@ -113,13 +142,15 @@ and expr (s : State.t) e =
     in
     let eval_prec = Precedence.Test in
     require_parens node_prec eval_prec content
-  | Name { id; _ } -> Concrete.Identifier.to_string id
+  | Name { id; _ } -> Identifier.to_string id
   | _ -> noop
 
-and py_module m =
-  let open Concrete.Module in
+and py_module s m =
+  let open Module in
   let acc = ref "" in
-  let process_statement s = acc := !acc ^ "\n" ^ statement s in
+  let process_statement stmt =
+    acc := !acc ^ "\n" ^ statement { s with source = !acc } stmt
+  in
   Base.List.iter m.body ~f:process_statement;
   !acc
 ;;
