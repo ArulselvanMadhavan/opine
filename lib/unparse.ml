@@ -45,18 +45,31 @@ module State = struct
   [@@deriving make]
 
   let default = { source = ""; indent = 0; expr_precedences }
+  let ( ++= ) s str = { s with source = s.source ^ str }
+
+  let block s f =
+    let s = { s with source = s.source ^ ":" } in
+    let s = { s with indent = s.indent + 1 } in
+    let s = f s in
+    { s with indent = s.indent - 1 }
+  ;;
+
+  let delimit s start end_ f =
+    let s = s ++= start in
+    let s = f s in
+    s ++= end_
+  ;;
 end
 
 let noop = "noop"
-let ( ++= ) (s : State.t) str = { s with source = s.source ^ str }
-let noop_state (s : State.t) = s ++= noop
+let noop_state (s : State.t) = State.(s ++= noop)
 let maybe_newline (s : State.t) = if Base.String.is_empty s.source then "" else "\n"
 
 let fill (s : State.t) text =
   let newline = maybe_newline s in
   let indents = Base.List.init s.indent ~f:(fun _ -> "    ") in
   let indents = Base.String.concat indents in
-  s ++= (newline ^ indents ^ text)
+  State.(s ++= (newline ^ indents ^ text))
 ;;
 
 let bin_op o =
@@ -71,17 +84,20 @@ let constant c =
   let open Constant in
   match c with
   | Integer i -> Int.to_string i
+  | String s -> Printf.sprintf "\"%s\"" s
   | _ -> noop
 ;;
 
 let rec arg (s : State.t) a =
   let open Argument in
+  let open State in
   let id = Identifier.to_string a.identifier in
   let s = s ++= id in
   Option.fold ~none:s ~some:(fun a -> expr (s ++= ":") a) a.annotation
 
 and arguments s xs =
   let open Arguments in
+  let open State in
   let all_args = xs.posonlyargs @ xs.args in
   let defaults = Array.of_list xs.defaults in
   let defaults_start_idx = List.length all_args - List.length xs.defaults in
@@ -114,8 +130,19 @@ and process_names names =
   let aliases = Base.List.map names ~f:import_alias in
   Base.String.concat ~sep:", " aliases
 
+and function_helper s ~decorator_list ~name ~args ~body ~def =
+  let open State in
+  let s = s ++= maybe_newline s in
+  let s = Base.List.fold ~init:s ~f:(fun s e -> expr (fill s "@") e) decorator_list in
+  let s = s ++= (def ^ " " ^ Identifier.to_string name) in
+  let s = delimit s "(" ")" (fun s -> arguments s args) in
+  let process_body s = Base.List.fold ~init:s ~f:statement body in
+  let s = block s process_body in
+  s
+
 and statement (s : State.t) stmt =
   let open Statement in
+  let open State in
   match stmt with
   | Import { names; _ } ->
     let s = fill s "import " in
@@ -126,7 +153,7 @@ and statement (s : State.t) stmt =
     let dots = Base.String.concat dots in
     let mod_name = Option.fold ~none:"" ~some:Identifier.to_string module_ in
     fill s "from " ++= (dots ^ mod_name ^ " import " ^ process_names names)
-  | ClassDef { name; decorator_list; bases; keywords; _ } ->
+  | ClassDef { name; decorator_list; bases; keywords; body; _ } ->
     (* decorator *)
     let s =
       Base.List.fold
@@ -146,11 +173,28 @@ and statement (s : State.t) stmt =
         expr s b)
     in
     (* keywords *)
-    if is_paren then s ++= ")" else s
+    let s = if is_paren then s ++= ")" else s in
+    (* body *)
+    let process_body s = Base.List.fold ~init:s ~f:statement body in
+    let s = block s process_body in
+    s
+  | FunctionDef { decorator_list; name; args; body; _ } ->
+    function_helper s ~decorator_list ~name ~args ~body ~def:"def"
+  | Assign { targets; value; _ } ->
+    let s = fill s "" in
+    let process_target s tgt =
+      Base.Hashtbl.update s.expr_precedences tgt ~f:(fun _ -> Precedence.Tuple);
+      let s = expr s tgt in
+      s ++= " = "
+    in
+    let s = Base.List.fold targets ~init:s ~f:process_target in
+    let s = expr s value in
+    s
   | _x -> noop_state s
 
 and expr (s : State.t) e =
   let open Base in
+  let open State in
   match e with
   | BinOp { left; right; op; _ } ->
     let s = expr s left in
