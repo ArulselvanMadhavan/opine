@@ -49,14 +49,14 @@ module State = struct
   let default = { source = ""; indent = 0; expr_precedences }
 end
 
-(* let fill s text = *)
-
 let require_parens node_prec eval_prec content =
   if node_prec > eval_prec then "(" ^ content ^ ")" else content
 ;;
 
+let maybe_newline (s:State.t) =
+  if Base.String.is_empty s.source then "" else "\n"
 let fill (s : State.t) text =
-  let newline = if Base.String.is_empty s.source then "" else "\n" in
+  let newline = maybe_newline s in
   let indents = Base.List.init s.indent ~f:(fun _ -> "    ") in
   let indents = Base.String.concat indents in
   newline ^ indents ^ text
@@ -124,6 +124,14 @@ and statement (s : State.t) stmt =
     let dots = Base.String.concat dots in
     let mod_name = Option.fold ~none:"" ~some:(Identifier.to_string) module_ in
     fill s "from " ^ dots ^ mod_name ^ " import " ^ process_names names
+  | ClassDef {name;decorator_list;_} ->
+    (* let newline = maybe_newline s in *)
+    let s = Base.List.fold ~init:s decorator_list ~f:(fun s dec ->
+        let at = fill s "@" in
+        let result = expr {s with source = s.source ^ at } dec in
+        {s with source = result}
+      ) in
+    fill s ("class " ^ Identifier.to_string name)
   | _x -> noop
 
 and expr (s : State.t) e =
@@ -149,7 +157,7 @@ and py_module s m =
   let open Module in
   let acc = ref "" in
   let process_statement stmt =
-    acc := !acc ^ "\n" ^ statement { s with source = !acc } stmt
+    acc := !acc ^ statement { s with source = !acc } stmt
   in
   Base.List.iter m.body ~f:process_statement;
   !acc

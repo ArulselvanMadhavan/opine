@@ -1,1 +1,5 @@
-from idiom.ml.torch.nn import setup_for_evaluation
+import torch
+
+class OPTAttention(nn.Module):
+    def __init__(self):
+        self._name = ""
