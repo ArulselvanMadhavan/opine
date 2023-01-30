@@ -134,7 +134,7 @@ and function_helper s ~decorator_list ~name ~args ~body ~def =
   let open State in
   let s = s ++= maybe_newline s in
   let s = Base.List.fold ~init:s ~f:(fun s e -> expr (fill s "@") e) decorator_list in
-  let s = s ++= (def ^ " " ^ Identifier.to_string name) in
+  let s = fill s (def ^ " " ^ Identifier.to_string name) in
   let s = delimit s "(" ")" (fun s -> arguments s args) in
   let process_body s = Base.List.fold ~init:s ~f:statement body in
   let s = block s process_body in
