@@ -77,11 +77,8 @@ let constant c =
 let rec arg (s : State.t) a =
   let open Argument in
   let id = Identifier.to_string a.identifier in
-  let s = { s with source = s.source ^ id } in
-  Option.fold
-    ~none:s
-    ~some:(fun a -> expr { s with source = s.source ^ ":" } a)
-    a.annotation
+  let s = s ++= id in
+  Option.fold ~none:s ~some:(fun a -> expr (s ++= ":") a) a.annotation
 
 and arguments s xs =
   let open Arguments in
@@ -91,7 +88,7 @@ and arguments s xs =
   let pos_only_idx = List.length xs.posonlyargs - 1 in
   let process_arg idx (s : State.t) a =
     (* Check comma *)
-    let s = if idx > 0 then { s with source = s.source ^ ", " } else s in
+    let s = if idx > 0 then s ++= ", " else s in
     let s = arg s a in
     (* Check default arg *)
     let s =
@@ -99,12 +96,12 @@ and arguments s xs =
       then (
         let d_idx = idx - defaults_start_idx in
         let d_expr = defaults.(d_idx) in
-        let s = { s with source = s.source ^ "=" } in
+        let s = s ++= "=" in
         expr s d_expr)
       else s
     in
     (* check pos only *)
-    if idx == pos_only_idx then { s with source = s.source ^ ", /" } else s
+    if idx == pos_only_idx then s ++= ", /" else s
   in
   Base.List.foldi all_args ~init:s ~f:process_arg
 
@@ -153,26 +150,25 @@ and expr (s : State.t) e =
   let open Base in
   match e with
   | BinOp { left; right; op; _ } ->
-    let left = expr s left in
-    let right = expr s right in
-    { s with source = left.source ^ " " ^ bin_op op ^ " " ^ right.source }
-  | Constant { value; _ } -> { s with source = s.source ^ constant value }
+    let s = expr s left in
+    let s = s ++= bin_op op in
+    expr s right
+  | Constant { value; _ } -> s ++= constant value
   | Lambda { args; body; _ } as node ->
     let node_prec =
       Option.value (Hashtbl.find s.expr_precedences node) ~default:Precedence.Test
     in
     let eval_prec = Precedence.Test in
     let is_paren = Precedence.(compare node_prec eval_prec) > 0 in
-    let s = if is_paren then { s with source = s.source ^ "(" } else s in
-    let s = { s with source = s.source ^ "lambda" ^ " " } in
+    let s = if is_paren then s ++= "(" else s in
+    let s = s ++= ("lambda" ^ " ") in
     let s = arguments s args in
-    let s = { s with source = s.source ^ ": " } in
+    let s = s ++= ": " in
     (* check body *)
     Hashtbl.update s.expr_precedences body ~f:(fun _ -> Precedence.Test);
     let s = expr s body in
-    if is_paren then { s with source = s.source ^ ")" } else s
-  | Name { id; _ } ->
-    { s with source = s.source ^ Identifier.to_string id } (* | Attribute {value;_} -> *)
+    if is_paren then s ++= ")" else s
+  | Name { id; _ } -> s ++= Identifier.to_string id
   | _ -> noop_state s
 
 and py_module s m =
@@ -181,6 +177,3 @@ and py_module s m =
   Base.List.fold m.body ~init:s ~f:process_statement
 ;;
 
-(* and py_module mod = *)
-(*   let open Concrete.Module in *)
-(*   "" *)
