@@ -28,6 +28,7 @@ let handle_result ~f = function
 ;;
 
 let parse_module enable_type_comment filename =
+  let open Opine.Unparse.State in
   let result =
     let open Base.Result in
     read_file_content filename
@@ -37,7 +38,7 @@ let parse_module enable_type_comment filename =
   in
   handle_result result ~f:(fun ast ->
     Format.printf "%a\n" Sexplib.Sexp.pp_hum (Concrete.Module.sexp_of_t ast);
-    Format.printf "%s\n" (Opine.Unparse.py_module Opine.Unparse.State.default ast))
+    Format.printf "%s\n" (Opine.Unparse.py_module Opine.Unparse.State.default ast).source)
 ;;
 
 let parse_expression filename =
@@ -50,7 +51,7 @@ let parse_expression filename =
   in
   handle_result result ~f:(fun ast ->
     Format.printf "%a\n" Sexplib.Sexp.pp_hum (Concrete.Expression.sexp_of_t ast);
-    Format.printf "%s\n" (Opine.Unparse.expr Opine.Unparse.State.default ast))
+    Format.printf "%s\n" (Opine.Unparse.expr Opine.Unparse.State.default ast).source)
 ;;
 
 let help_sections =

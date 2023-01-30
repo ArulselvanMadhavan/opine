@@ -4,8 +4,6 @@ open PyreAst.Concrete
 (* open Concrete.BinaryOperator *)
 (* open Concrete.Statement *)
 
-let noop = "noop"
-
 module Precedence = struct
   type t =
     | Named_Expr
@@ -49,17 +47,16 @@ module State = struct
   let default = { source = ""; indent = 0; expr_precedences }
 end
 
-let require_parens node_prec eval_prec content =
-  if node_prec > eval_prec then "(" ^ content ^ ")" else content
-;;
+let noop = "noop"
+let ( ++= ) (s : State.t) str = { s with source = s.source ^ str }
+let noop_state (s : State.t) = s ++= noop
+let maybe_newline (s : State.t) = if Base.String.is_empty s.source then "" else "\n"
 
-let maybe_newline (s:State.t) =
-  if Base.String.is_empty s.source then "" else "\n"
 let fill (s : State.t) text =
   let newline = maybe_newline s in
   let indents = Base.List.init s.indent ~f:(fun _ -> "    ") in
   let indents = Base.String.concat indents in
-  newline ^ indents ^ text
+  s ++= (newline ^ indents ^ text)
 ;;
 
 let bin_op o =
@@ -77,11 +74,14 @@ let constant c =
   | _ -> noop
 ;;
 
-let rec arg s a =
+let rec arg (s : State.t) a =
   let open Argument in
   let id = Identifier.to_string a.identifier in
-  let annot = Option.fold ~none:"" ~some:(fun a -> ":" ^ expr s a) a.annotation in
-  id ^ annot
+  let s = { s with source = s.source ^ id } in
+  Option.fold
+    ~none:s
+    ~some:(fun a -> expr { s with source = s.source ^ ":" } a)
+    a.annotation
 
 and arguments s xs =
   let open Arguments in
@@ -89,78 +89,96 @@ and arguments s xs =
   let defaults = Array.of_list xs.defaults in
   let defaults_start_idx = List.length all_args - List.length xs.defaults in
   let pos_only_idx = List.length xs.posonlyargs - 1 in
-  let acc = ref "" in
-  let process_arg idx a =
+  let process_arg idx (s : State.t) a =
     (* Check comma *)
-    if idx > 0 then acc := !acc ^ ", ";
-    acc := !acc ^ arg s a;
+    let s = if idx > 0 then { s with source = s.source ^ ", " } else s in
+    let s = arg s a in
     (* Check default arg *)
-    if idx >= defaults_start_idx
-    then (
-      let d_idx = idx - defaults_start_idx in
-      let d_expr = defaults.(d_idx) in
-      acc := !acc ^ "=" ^ expr s d_expr);
+    let s =
+      if idx >= defaults_start_idx
+      then (
+        let d_idx = idx - defaults_start_idx in
+        let d_expr = defaults.(d_idx) in
+        let s = { s with source = s.source ^ "=" } in
+        expr s d_expr)
+      else s
+    in
     (* check pos only *)
-    if idx == pos_only_idx then acc := !acc ^ ", /"
+    if idx == pos_only_idx then { s with source = s.source ^ ", /" } else s
   in
-  Base.List.iteri all_args ~f:process_arg;
-  !acc
+  Base.List.foldi all_args ~init:s ~f:process_arg
 
 and import_alias ia =
   let open ImportAlias in
   Identifier.to_string ia.name
   ^ Option.fold ~none:"" ~some:(fun asn -> " as " ^ Identifier.to_string asn) ia.asname
+
 and process_names names =
-      let aliases = Base.List.map names ~f:import_alias in
-    Base.String.concat ~sep:", " aliases
+  let aliases = Base.List.map names ~f:import_alias in
+  Base.String.concat ~sep:", " aliases
+
 and statement (s : State.t) stmt =
   let open Statement in
   match stmt with
-  | Import { names ; _ } ->
-    fill s "import " ^ process_names names 
-  | ImportFrom {names; level;module_;_} ->
+  | Import { names; _ } ->
+    let s = fill s "import " in
+    s ++= process_names names
+  | ImportFrom { names; level; module_; _ } ->
     (* self.write("." * (node.level or 0)) *)
     let dots = Base.List.init level ~f:(fun _ -> ".") in
     let dots = Base.String.concat dots in
-    let mod_name = Option.fold ~none:"" ~some:(Identifier.to_string) module_ in
-    fill s "from " ^ dots ^ mod_name ^ " import " ^ process_names names
-  | ClassDef {name;decorator_list;_} ->
-    (* let newline = maybe_newline s in *)
-    let s = Base.List.fold ~init:s decorator_list ~f:(fun s dec ->
-        let at = fill s "@" in
-        let result = expr {s with source = s.source ^ at } dec in
-        {s with source = result}
-      ) in
-    fill s ("class " ^ Identifier.to_string name)
-  | _x -> noop
+    let mod_name = Option.fold ~none:"" ~some:Identifier.to_string module_ in
+    fill s "from " ++= (dots ^ mod_name ^ " import " ^ process_names names)
+  | ClassDef { name; decorator_list; bases; _ } ->
+    (* decorator *)
+    let s =
+      Base.List.fold
+        ~init:(s ++= maybe_newline s)
+        decorator_list
+        ~f:(fun s dec -> expr (fill s "@") dec)
+    in
+    (* class *)
+    let s = fill s ("class " ^ Identifier.to_string name) in
+    (* bases *)
+    let s =
+      Base.List.foldi ~init:s bases ~f:(fun idx s b ->
+        let s = if idx > 0 then s ++= ", " else s in
+        expr s b)
+    in
+    (* keywords *)
+    s
+  | _x -> noop_state s
 
 and expr (s : State.t) e =
   let open Base in
   match e with
-  | BinOp { left; right; op; _ } -> expr s left ^ " " ^ bin_op op ^ " " ^ expr s right
-  | Constant { value; _ } -> constant value
+  | BinOp { left; right; op; _ } ->
+    let left = expr s left in
+    let right = expr s right in
+    { s with source = left.source ^ " " ^ bin_op op ^ " " ^ right.source }
+  | Constant { value; _ } -> { s with source = s.source ^ constant value }
   | Lambda { args; body; _ } as node ->
-    let content = "lambda" ^ " " ^ arguments s args ^ ": " in
-    (* check body *)
-    Hashtbl.update s.expr_precedences body ~f:(fun _ -> Precedence.Test);
-    let content = content ^ expr s body in
-    (* check parens *)
     let node_prec =
       Option.value (Hashtbl.find s.expr_precedences node) ~default:Precedence.Test
     in
     let eval_prec = Precedence.Test in
-    require_parens node_prec eval_prec content
-  | Name { id; _ } -> Identifier.to_string id
-  | _ -> noop
+    let is_paren = Precedence.(compare node_prec eval_prec) > 0 in
+    let s = if is_paren then { s with source = s.source ^ "(" } else s in
+    let s = { s with source = s.source ^ "lambda" ^ " " } in
+    let s = arguments s args in
+    let s = { s with source = s.source ^ ": " } in
+    (* check body *)
+    Hashtbl.update s.expr_precedences body ~f:(fun _ -> Precedence.Test);
+    let s = expr s body in
+    if is_paren then { s with source = s.source ^ ")" } else s
+  | Name { id; _ } ->
+    { s with source = s.source ^ Identifier.to_string id } (* | Attribute {value;_} -> *)
+  | _ -> noop_state s
 
 and py_module s m =
   let open Module in
-  let acc = ref "" in
-  let process_statement stmt =
-    acc := !acc ^ statement { s with source = !acc } stmt
-  in
-  Base.List.iter m.body ~f:process_statement;
-  !acc
+  let process_statement s stmt = statement s stmt in
+  Base.List.fold m.body ~init:s ~f:process_statement
 ;;
 
 (* and py_module mod = *)
