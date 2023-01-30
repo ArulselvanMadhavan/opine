@@ -126,7 +126,7 @@ and statement (s : State.t) stmt =
     let dots = Base.String.concat dots in
     let mod_name = Option.fold ~none:"" ~some:Identifier.to_string module_ in
     fill s "from " ++= (dots ^ mod_name ^ " import " ^ process_names names)
-  | ClassDef { name; decorator_list; bases; _ } ->
+  | ClassDef { name; decorator_list; bases; keywords; _ } ->
     (* decorator *)
     let s =
       Base.List.fold
@@ -136,6 +136,9 @@ and statement (s : State.t) stmt =
     in
     (* class *)
     let s = fill s ("class " ^ Identifier.to_string name) in
+    (* parens *)
+    let is_paren = List.length bases > 0 || List.length keywords > 0 in
+    let s = if is_paren then s ++= "(" else s in
     (* bases *)
     let s =
       Base.List.foldi ~init:s bases ~f:(fun idx s b ->
@@ -143,7 +146,7 @@ and statement (s : State.t) stmt =
         expr s b)
     in
     (* keywords *)
-    s
+    if is_paren then s ++= ")" else s
   | _x -> noop_state s
 
 and expr (s : State.t) e =
@@ -169,6 +172,21 @@ and expr (s : State.t) e =
     let s = expr s body in
     if is_paren then s ++= ")" else s
   | Name { id; _ } -> s ++= Identifier.to_string id
+  | Attribute { value; attr; _ } ->
+    let open Expression in
+    Hashtbl.update s.expr_precedences value ~f:(fun _ -> Precedence.Atom);
+    let s = expr s value in
+    let handle_special_case s = function
+      | Constant { value; _ } ->
+        (match value with
+         | Constant.Integer _ -> s ++= " "
+         | _ -> s)
+      | _ -> s
+    in
+    let s = handle_special_case s value in
+    let s = s ++= "." in
+    let s = s ++= Identifier.to_string attr in
+    s
   | _ -> noop_state s
 
 and py_module s m =
@@ -176,4 +194,3 @@ and py_module s m =
   let process_statement s stmt = statement s stmt in
   Base.List.fold m.body ~init:s ~f:process_statement
 ;;
-
