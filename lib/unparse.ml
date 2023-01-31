@@ -80,12 +80,133 @@ let bin_op o =
   | _ -> noop
 ;;
 
+let repr str =
+  let buf = Buffer.create (String.length str + 10) in
+  Buffer.add_char buf '\'';
+  Buffer.add_char buf '"';
+  Base.String.iter str ~f:(fun c ->
+    if c = '\'' then Buffer.add_char buf '\\';
+    Buffer.add_char buf c);
+  Buffer.add_char buf '"';
+  Buffer.add_char buf '\'';
+  Buffer.contents buf
+;;
+
+(* let result = Py.Run.simple_string "print('Hello, world!')" in *)
+(* if result then "succ" else "Fail" *)
+(* let _builtins = Py.Eval.get_builtins () in *)
+(* let repr_python = Py.Dict.find_string builtins "repr" in *)
+(* let repr_python = Py.Callable.to_function repr_python in *)
+(* Py.String.to_string (repr_python [|Py.String.of_string str|]) *)
+
 let constant c =
   let open Constant in
   match c with
   | Integer i -> Int.to_string i
-  | String s -> Printf.sprintf "\"%s\"" s
-  | _ -> noop
+  | String s -> repr s
+  | True | False -> Sexplib0.Sexp.to_string (Constant.sexp_of_t c)
+  | _ ->
+    Printf.printf "Hit noop";
+    noop
+;;
+
+let single_quotes = [| "'"; "\"" |]
+let multi_quotes = [| "\"\"\""; "'''" |]
+let all_quotes = Array.concat [ single_quotes; multi_quotes ]
+
+let multi_quotes_ht =
+  let ht = Base.Hash_set.create ~size:2 (module Base.String) in
+  Array.iter (Base.Hash_set.add ht) multi_quotes;
+  ht
+;;
+
+let _str_literal_helper str escape_special_whitespace quote_types =
+  let is_printable c =
+    let c = Char.code c in
+    32 <= c && c < 127
+  in
+  let escape_char c =
+    if (not escape_special_whitespace) && (c == '\n' || c == '\t')
+    then c
+    else if c == '\\' || not (is_printable c)
+    then (
+      let buf = Buffer.create 1 in
+      Uutf.Buffer.add_utf_8 buf (Uchar.of_char c);
+      Buffer.nth buf 0)
+    else c
+  in
+  let escaped_string = Base.String.map str ~f:escape_char in
+
+  let possible_quotes = quote_types in
+  let possible_quotes =
+    if Base.String.contains escaped_string '\n' then multi_quotes else possible_quotes
+  in
+  let possible_quotes =
+    Base.Array.filter possible_quotes ~f:(fun pq ->
+      Option.is_none (Base.String.substr_index escaped_string ~pattern:pq))
+  in
+  if Base.Array.is_empty possible_quotes
+  then (
+    let str = repr str in
+    let sq = String.get str 0 in
+    let quote =
+      Base.Array.find_exn quote_types ~f:(fun q ->
+        Option.is_some (Base.String.find q ~f:(fun qq -> sq = qq)))
+    in
+    Base.String.drop_prefix str 1, [| quote |])
+  else if not (Base.String.is_empty escaped_string)
+  then (
+    Base.Array.sort possible_quotes ~compare:(fun l r ->
+      let eq = String.get escaped_string ((String.length escaped_string) - 1) in
+      let leq = String.get l 0 = eq in
+      let req = String.get r 0 = eq in
+      Base.Bool.compare leq req);
+    let pq = possible_quotes.(0) in
+    let pq = String.get pq 0 in
+    let lc = String.get escaped_string ((String.length escaped_string) - 1) in
+    if pq == lc
+    then (
+      let escaped_string =
+        Base.String.drop_suffix escaped_string 1
+        ^ "\\"
+        ^ Base.String.suffix escaped_string 1
+      in
+      escaped_string, possible_quotes)
+    else escaped_string, possible_quotes)
+  else escaped_string, possible_quotes
+;;
+
+let _write_str_avoiding_backslashes s doc ~quote_types =
+  let open State in
+  let doc, quote_types = _str_literal_helper doc false quote_types in
+  let quote_type = quote_types.(0) in
+  s ++= Printf.sprintf "%s%s%s" quote_type doc quote_type
+;;
+
+let get_docstring node =
+  let open Statement in
+  match node with
+  | AsyncFunctionDef { body; _ } | FunctionDef { body; _ } | ClassDef { body; _ } ->
+    if List.length body = 0
+    then None
+    else (
+      match List.hd body with
+      | Expr { value; _ } ->
+        (match value with
+         | Constant { value; _ } ->
+           (match value with
+            | String s -> Some s
+            | _ -> None)
+         | _ -> None)
+      | _ -> None)
+  | _ -> None
+;;
+
+let write_docstring s = function
+  | Some doc ->
+    let s = fill s "" in
+    _write_str_avoiding_backslashes s doc ~quote_types:multi_quotes
+  | None -> s
 ;;
 
 let rec arg (s : State.t) a =
@@ -153,7 +274,7 @@ and statement (s : State.t) stmt =
     let dots = Base.String.concat dots in
     let mod_name = Option.fold ~none:"" ~some:Identifier.to_string module_ in
     fill s "from " ++= (dots ^ mod_name ^ " import " ^ process_names names)
-  | ClassDef { name; decorator_list; bases; keywords; body; _ } ->
+  | ClassDef { name; decorator_list; bases; keywords; body; _ } as node ->
     (* decorator *)
     let s =
       Base.List.fold
@@ -175,6 +296,9 @@ and statement (s : State.t) stmt =
     (* keywords *)
     let s = if is_paren then s ++= ")" else s in
     (* body *)
+    let docstring = get_docstring node in
+    let s = write_docstring s docstring in
+    let body = Option.fold ~some:(fun _ -> List.tl body) ~none:body docstring in
     let process_body s = Base.List.fold ~init:s ~f:statement body in
     let s = block s process_body in
     s
@@ -190,6 +314,7 @@ and statement (s : State.t) stmt =
     let s = Base.List.fold targets ~init:s ~f:process_target in
     let s = expr s value in
     s
+  | Expr { value; _ } -> expr s value
   | _x -> noop_state s
 
 and expr (s : State.t) e =

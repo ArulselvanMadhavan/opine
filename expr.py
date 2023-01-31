@@ -1,5 +1,4 @@
 import torch
 
 class OPTAttention(nn.Module):
-    def __init__(self):
-        self._name = ""
+    """Multi-headed attention from 'Attention Is All You Need' paper"""        

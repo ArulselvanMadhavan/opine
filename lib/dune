@@ -1,5 +1,5 @@
 (library
  (name opine)
- (libraries base stdio pyre-ast)
+ (libraries base stdio pyre-ast uutf)
  (preprocess
   (pps ppx_hash ppx_compare ppx_sexp_conv ppx_make)))
