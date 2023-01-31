@@ -77,6 +77,7 @@ let bin_op o =
   match o with
   | Add -> "+"
   | Mult -> "*"
+  | FloorDiv -> "//"
   | _ -> noop
 ;;
 
@@ -91,13 +92,6 @@ let repr str =
   Buffer.add_char buf '\'';
   Buffer.contents buf
 ;;
-
-(* let result = Py.Run.simple_string "print('Hello, world!')" in *)
-(* if result then "succ" else "Fail" *)
-(* let _builtins = Py.Eval.get_builtins () in *)
-(* let repr_python = Py.Dict.find_string builtins "repr" in *)
-(* let repr_python = Py.Callable.to_function repr_python in *)
-(* Py.String.to_string (repr_python [|Py.String.of_string str|]) *)
 
 let constant c =
   let open Constant in
@@ -249,15 +243,21 @@ and process_names names =
   let aliases = Base.List.map names ~f:import_alias in
   Base.String.concat ~sep:", " aliases
 
-and function_helper s ~decorator_list ~name ~args ~body ~def =
+and function_helper s node ~decorator_list ~name ~args ~body ~def =
   let open State in
   let s = s ++= maybe_newline s in
   let s = Base.List.fold ~init:s ~f:(fun s e -> expr (fill s "@") e) decorator_list in
   let s = fill s (def ^ " " ^ Identifier.to_string name) in
   let s = delimit s "(" ")" (fun s -> arguments s args) in
-  let process_body s = Base.List.fold ~init:s ~f:statement body in
-  let s = block s process_body in
+  (* let process_body s = Base.List.fold ~init:s ~f:statement body in *)
+  let s = block s (docstring_and_body node body) in
   s
+
+and docstring_and_body node body s =
+  let docstring = get_docstring node in
+  let s = write_docstring s docstring in
+  let body = Option.fold ~some:(fun _ -> List.tl body) ~none:body docstring in
+  Base.List.fold ~init:s ~f:statement body
 
 and statement (s : State.t) stmt =
   let open Statement in
@@ -294,16 +294,10 @@ and statement (s : State.t) stmt =
     (* keywords *)
     let s = if is_paren then s ++= ")" else s in
     (* body *)
-    let docstring_and_body s =
-      let docstring = get_docstring node in
-      let s = write_docstring s docstring in
-      let body = Option.fold ~some:(fun _ -> List.tl body) ~none:body docstring in
-      Base.List.fold ~init:s ~f:statement body
-    in
-    let s = block s docstring_and_body in
+    let s = block s (docstring_and_body node body) in
     s
-  | FunctionDef { decorator_list; name; args; body; _ } ->
-    function_helper s ~decorator_list ~name ~args ~body ~def:"def"
+  | FunctionDef { decorator_list; name; args; body; _ } as node ->
+    function_helper s node ~decorator_list ~name ~args ~body ~def:"def"
   | Assign { targets; value; _ } ->
     let s = fill s "" in
     let process_target s tgt =
@@ -314,7 +308,10 @@ and statement (s : State.t) stmt =
     let s = Base.List.fold targets ~init:s ~f:process_target in
     let s = expr s value in
     s
-  | Expr { value; _ } -> expr s value
+  | Expr { value; _ } ->
+    let s = fill s "" in
+    Base.Hashtbl.update s.expr_precedences ~f:(fun _ -> Precedence.Yield) value;
+    expr s value
   | _x -> noop_state s
 
 and expr (s : State.t) e =
@@ -323,7 +320,7 @@ and expr (s : State.t) e =
   match e with
   | BinOp { left; right; op; _ } ->
     let s = expr s left in
-    let s = s ++= bin_op op in
+    let s = s ++= (" " ^ bin_op op ^ " ") in
     expr s right
   | Constant { value; _ } -> s ++= constant value
   | Lambda { args; body; _ } as node ->
@@ -355,6 +352,18 @@ and expr (s : State.t) e =
     let s = handle_special_case s value in
     let s = s ++= "." in
     let s = s ++= Identifier.to_string attr in
+    s
+  | Call { func; args; _ } ->
+    (* self.set_precedence(_Precedence.ATOM, node.func) *)
+    Hashtbl.update s.expr_precedences func ~f:(fun _ -> Precedence.Atom);
+    let s = expr s func in
+    let process_call s =
+      Base.List.foldi
+        ~init:s
+        ~f:(fun idx s a -> expr (if idx > 0 then s ++= ", " else s) a)
+        args
+    in
+    let s = delimit s "(" ")" process_call in
     s
   | _ -> noop_state s
 
