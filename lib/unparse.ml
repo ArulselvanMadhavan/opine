@@ -105,9 +105,8 @@ let constant c =
   | Integer i -> Int.to_string i
   | String s -> repr s
   | True | False -> Sexplib0.Sexp.to_string (Constant.sexp_of_t c)
-  | _ ->
-    Printf.printf "Hit noop";
-    noop
+  | Float f -> Float.to_string f
+  | _ -> noop
 ;;
 
 let single_quotes = [| "'"; "\"" |]
@@ -136,7 +135,6 @@ let _str_literal_helper str escape_special_whitespace quote_types =
     else c
   in
   let escaped_string = Base.String.map str ~f:escape_char in
-
   let possible_quotes = quote_types in
   let possible_quotes =
     if Base.String.contains escaped_string '\n' then multi_quotes else possible_quotes
@@ -157,13 +155,13 @@ let _str_literal_helper str escape_special_whitespace quote_types =
   else if not (Base.String.is_empty escaped_string)
   then (
     Base.Array.sort possible_quotes ~compare:(fun l r ->
-      let eq = String.get escaped_string ((String.length escaped_string) - 1) in
+      let eq = String.get escaped_string (String.length escaped_string - 1) in
       let leq = String.get l 0 = eq in
       let req = String.get r 0 = eq in
       Base.Bool.compare leq req);
     let pq = possible_quotes.(0) in
     let pq = String.get pq 0 in
-    let lc = String.get escaped_string ((String.length escaped_string) - 1) in
+    let lc = String.get escaped_string (String.length escaped_string - 1) in
     if pq == lc
     then (
       let escaped_string =
@@ -296,11 +294,13 @@ and statement (s : State.t) stmt =
     (* keywords *)
     let s = if is_paren then s ++= ")" else s in
     (* body *)
-    let docstring = get_docstring node in
-    let s = write_docstring s docstring in
-    let body = Option.fold ~some:(fun _ -> List.tl body) ~none:body docstring in
-    let process_body s = Base.List.fold ~init:s ~f:statement body in
-    let s = block s process_body in
+    let docstring_and_body s =
+      let docstring = get_docstring node in
+      let s = write_docstring s docstring in
+      let body = Option.fold ~some:(fun _ -> List.tl body) ~none:body docstring in
+      Base.List.fold ~init:s ~f:statement body
+    in
+    let s = block s docstring_and_body in
     s
   | FunctionDef { decorator_list; name; args; body; _ } ->
     function_helper s ~decorator_list ~name ~args ~body ~def:"def"
