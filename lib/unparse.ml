@@ -25,7 +25,7 @@ module Precedence = struct
     | Power
     | Await
     | Atom
-  [@@deriving compare, sexp, hash]
+  [@@deriving compare, sexp, hash, enum]
 end
 
 let default_hash_size = 64
@@ -59,6 +59,14 @@ module State = struct
     let s = f s in
     s ++= end_
   ;;
+
+  let delimit_if s start end_ condition f =
+    if condition then delimit s start end_ f else f s
+  ;;
+
+  let require_parens s eval_prec node_prec =
+    delimit_if s "(" ")" (Precedence.compare node_prec eval_prec > 0)
+  ;;
 end
 
 let noop = "noop"
@@ -70,6 +78,13 @@ let fill (s : State.t) text =
   let indents = Base.List.init s.indent ~f:(fun _ -> "    ") in
   let indents = Base.String.concat indents in
   State.(s ++= (newline ^ indents ^ text))
+;;
+
+let comp_op o =
+  let open ComparisonOperator in
+  match o with
+  | NotEq -> "!="
+  | _ -> ""
 ;;
 
 let bin_op o =
@@ -312,6 +327,24 @@ and statement (s : State.t) stmt =
     let s = fill s "" in
     Base.Hashtbl.update s.expr_precedences ~f:(fun _ -> Precedence.Yield) value;
     expr s value
+  | If { test; body; orelse; _ } ->
+    let s = fill s "if " in
+    let s = expr s test in
+    let s = block s (fun s -> Base.List.fold body ~init:s ~f:statement) in
+    let else_opt = Base.List.last orelse in
+    let elif_opt = Base.List.drop_last orelse in
+    let s =
+      Base.Option.fold elif_opt ~init:s ~f:(fun s elifs ->
+        Base.List.fold elifs ~init:s ~f:(fun s stmt ->
+          match stmt with
+          | If { test; body; _ } ->
+            let s = expr (fill s "elif ") test in
+            block s (fun s -> Base.List.fold ~init:s ~f:statement body)
+          | _ -> s))
+    in
+    Base.Option.fold else_opt ~init:s ~f:(fun s stmt ->
+      let s = fill s "else" in
+      block s (fun s -> statement s stmt))
   | _x -> noop_state s
 
 and expr (s : State.t) e =
@@ -365,6 +398,22 @@ and expr (s : State.t) e =
     in
     let s = delimit s "(" ")" process_call in
     s
+  | Compare { left; ops; comparators; _ } ->
+    (* with self.require_parens(_Precedence.CMP, node): *)
+    let node_prec =
+      Option.value (Hashtbl.find s.expr_precedences left) ~default:Precedence.Test
+    in
+    let f s =
+      Base.Hashtbl.update s.expr_precedences left ~f:(fun _ ->
+        Base.Option.value_exn (Precedence.of_enum (Precedence.to_enum Precedence.Cmp + 1)));
+      let s = expr s left in
+      let zipped = Base.List.zip_exn ops comparators in
+      Base.List.fold zipped ~init:s ~f:(fun s oe ->
+        let o, e = oe in
+        let s = State.(s ++= (" " ^ comp_op o ^ " ")) in
+        expr s e)
+    in
+    require_parens s Precedence.Cmp node_prec f
   | _ -> noop_state s
 
 and py_module s m =
