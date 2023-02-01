@@ -4,6 +4,8 @@ open PyreAst.Concrete
 (* open Concrete.BinaryOperator *)
 (* open Concrete.Statement *)
 
+let default_hash_size = 64
+
 module Precedence = struct
   type t =
     | Named_Expr
@@ -26,12 +28,52 @@ module Precedence = struct
     | Await
     | Atom
   [@@deriving compare, sexp, hash, enum]
+
+  let next t = of_enum (to_enum t + 1)
 end
 
-let default_hash_size = 64
+let unary_precedences =
+  let ht = Base.Hashtbl.create ~size:default_hash_size (module UnaryOperator) in
+  Base.Hashtbl.update ht (UnaryOperator.make_not_of_t ()) ~f:(fun _ -> Precedence.Not);
+  Base.Hashtbl.update ht (UnaryOperator.make_invert_of_t ()) ~f:(fun _ ->
+    Precedence.Factor);
+  Base.Hashtbl.update ht (UnaryOperator.make_uadd_of_t ()) ~f:(fun _ -> Precedence.Factor);
+  Base.Hashtbl.update ht (UnaryOperator.make_usub_of_t ()) ~f:(fun _ -> Precedence.Factor);
+  ht
+;;
+
+let binop_precedences =
+  let ht = Base.Hashtbl.create ~size:default_hash_size (module BinaryOperator) in
+  Base.Hashtbl.update ht (BinaryOperator.make_add_of_t ()) ~f:(fun _ -> Precedence.Arith);
+  Base.Hashtbl.update ht (BinaryOperator.make_sub_of_t ()) ~f:(fun _ -> Precedence.Arith);
+  Base.Hashtbl.update ht (BinaryOperator.make_mult_of_t ()) ~f:(fun _ -> Precedence.Term);
+  Base.Hashtbl.update ht (BinaryOperator.make_matmult_of_t ()) ~f:(fun _ ->
+    Precedence.Term);
+  Base.Hashtbl.update ht (BinaryOperator.make_div_of_t ()) ~f:(fun _ -> Precedence.Term);
+  Base.Hashtbl.update ht (BinaryOperator.make_mod_of_t ()) ~f:(fun _ -> Precedence.Term);
+  Base.Hashtbl.update ht (BinaryOperator.make_lshift_of_t ()) ~f:(fun _ ->
+    Precedence.Shift);
+  Base.Hashtbl.update ht (BinaryOperator.make_rshift_of_t ()) ~f:(fun _ ->
+    Precedence.Shift);
+  Base.Hashtbl.update ht (BinaryOperator.make_bitor_of_t ()) ~f:(fun _ -> Precedence.Bor);
+  Base.Hashtbl.update ht (BinaryOperator.make_bitxor_of_t ()) ~f:(fun _ ->
+    Precedence.Bxor);
+  Base.Hashtbl.update ht (BinaryOperator.make_bitand_of_t ()) ~f:(fun _ ->
+    Precedence.Band);
+  Base.Hashtbl.update ht (BinaryOperator.make_floordiv_of_t ()) ~f:(fun _ ->
+    Precedence.Term);
+  Base.Hashtbl.update ht (BinaryOperator.make_pow_of_t ()) ~f:(fun _ -> Precedence.Power);
+  ht
+;;
 
 let expr_precedences : (Expression.t, Precedence.t) Base.Hashtbl.t =
   Base.Hashtbl.create ~size:default_hash_size (module Expression)
+;;
+
+let binop_rassoc =
+  let ht = Base.Hashtbl.create ~size:1 (module BinaryOperator) in
+  Base.Hashtbl.update ht (BinaryOperator.make_pow_of_t ()) ~f:(fun _ -> true);
+  ht
 ;;
 
 module State = struct
@@ -94,12 +136,22 @@ let comp_op o =
   | _ -> ""
 ;;
 
+let unary_op o =
+  let open UnaryOperator in
+  match o with
+  | Not -> "not"
+  | Invert -> "~"
+  | UAdd -> "+"
+  | USub -> "-"
+;;
+
 let bin_op o =
   let open BinaryOperator in
   match o with
   | Add -> "+"
   | Mult -> "*"
   | FloorDiv -> "//"
+  | Pow -> "**"
   | _ -> noop
 ;;
 
@@ -286,8 +338,7 @@ and _write_fstring_inner s node =
   let open Expression in
   match node with
   | JoinedStr { values; _ } -> Base.List.fold values ~init:s ~f:_write_fstring_inner
-  | Constant { value; _ } ->
-    State.(s ++= constant value)
+  | Constant { value; _ } -> State.(s ++= constant value)
   | FormattedValue _ -> expr s node
   | _ -> raise (UnexpectedNode "fstring_inner")
 
@@ -379,10 +430,38 @@ and expr (s : State.t) e =
   let open Base in
   let open State in
   match e with
-  | BinOp { left; right; op; _ } ->
-    let s = expr s left in
-    let s = s ++= (" " ^ bin_op op ^ " ") in
-    expr s right
+  | UnaryOp { op; operand; _ } as node ->
+    let op_prec = Base.Hashtbl.find_exn unary_precedences op in
+    let node_prec =
+      Option.value (Base.Hashtbl.find s.expr_precedences node) ~default:Precedence.Test
+    in
+    let f s =
+      let s = s ++= unary_op op in
+      let s = if Precedence.(compare op_prec Precedence.Not) <> 0 then s ++= " " else s in
+      Base.Hashtbl.update s.expr_precedences operand ~f:(fun _ -> op_prec);
+      expr s operand
+    in
+    require_parens s op_prec node_prec f
+  | BinOp { left; right; op; _ } as node ->
+    let op_prec = Base.Hashtbl.find_exn binop_precedences op in
+    let node_prec =
+      Option.value (Base.Hashtbl.find s.expr_precedences node) ~default:Precedence.Test
+    in
+    let f s =
+      let rassoc_opt = Base.Hashtbl.find binop_rassoc op in
+      let l_prec, r_prec =
+        Base.Option.fold
+          ~init:(op_prec, Option.value_exn (Precedence.next op_prec))
+          ~f:(fun _ _ -> Option.value_exn (Precedence.next op_prec), op_prec)
+          rassoc_opt
+      in
+      Base.Hashtbl.update s.expr_precedences left ~f:(fun _ -> l_prec);
+      let s = expr s left in
+      let s = s ++= (" " ^ bin_op op ^ " ") in
+      Base.Hashtbl.update s.expr_precedences right ~f:(fun _ -> r_prec);
+      expr s right
+    in
+    require_parens s op_prec node_prec f
   | Constant { value; _ } -> s ++= constant value
   | Lambda { args; body; _ } as node ->
     let node_prec =
@@ -427,13 +506,12 @@ and expr (s : State.t) e =
     let s = delimit s "(" ")" process_call in
     s
   | Compare { left; ops; comparators; _ } ->
-    (* with self.require_parens(_Precedence.CMP, node): *)
     let node_prec =
       Option.value (Hashtbl.find s.expr_precedences left) ~default:Precedence.Test
     in
     let f s =
       Base.Hashtbl.update s.expr_precedences left ~f:(fun _ ->
-        Base.Option.value_exn (Precedence.of_enum (Precedence.to_enum Precedence.Cmp + 1)));
+        Base.Option.value_exn (Precedence.next Precedence.Cmp));
       let s = expr s left in
       let zipped = Base.List.zip_exn ops comparators in
       Base.List.fold zipped ~init:s ~f:(fun s oe ->
@@ -480,7 +558,7 @@ and expr (s : State.t) e =
     let unparse_inner inner =
       let s = { State.default with avoid_backslashes = true } in
       Base.Hashtbl.update s.expr_precedences inner ~f:(fun _ ->
-        Option.value_exn (Precedence.of_enum (Precedence.to_enum Precedence.Test + 1)));
+        Option.value_exn (Precedence.next Precedence.Test));
       expr s inner
     in
     let f s =
