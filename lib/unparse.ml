@@ -41,10 +41,11 @@ module State = struct
     { source : string
     ; indent : int
     ; expr_precedences : (Expression.t, Precedence.t) Hashtbl.t
+    ; avoid_backslashes : bool
     }
   [@@deriving make]
 
-  let default = { source = ""; indent = 0; expr_precedences }
+  let default = { source = ""; indent = 0; expr_precedences; avoid_backslashes = false }
   let ( ++= ) s str = { s with source = s.source ^ str }
 
   let block s f =
@@ -67,7 +68,13 @@ module State = struct
   let require_parens s eval_prec node_prec =
     delimit_if s "(" ")" (Precedence.compare node_prec eval_prec > 0)
   ;;
+
+  let buffered f = f default
 end
+
+exception CauseWithoutException of string
+exception UnexpectedNode of string
+exception ValueError of string
 
 let noop = "noop"
 let noop_state (s : State.t) = State.(s ++= noop)
@@ -97,15 +104,16 @@ let bin_op o =
 ;;
 
 let repr str =
-  let buf = Buffer.create (String.length str + 10) in
-  Buffer.add_char buf '\'';
-  Buffer.add_char buf '"';
-  Base.String.iter str ~f:(fun c ->
-    if c = '\'' then Buffer.add_char buf '\\';
-    Buffer.add_char buf c);
-  Buffer.add_char buf '"';
-  Buffer.add_char buf '\'';
-  Buffer.contents buf
+  (* let buf = Buffer.create (String.length str + 10) in *)
+  (* Buffer.add_char buf '\''; *)
+  (* Buffer.add_char buf '"'; *)
+  (* Base.String.iter str ~f:(fun c -> *)
+  (*   if c = '\'' then Buffer.add_char buf '\\'; *)
+  (*   Buffer.add_char buf c); *)
+  (* Buffer.add_char buf '"'; *)
+  (* Buffer.add_char buf '\''; *)
+  (* Buffer.contents buf *)
+  str
 ;;
 
 let constant c =
@@ -183,7 +191,7 @@ let _str_literal_helper str escape_special_whitespace quote_types =
   else escaped_string, possible_quotes
 ;;
 
-let _write_str_avoiding_backslashes s doc ~quote_types =
+let _write_str_avoiding_backslashes ?(quote_types = all_quotes) s doc =
   let open State in
   let doc, quote_types = _str_literal_helper doc false quote_types in
   let quote_type = quote_types.(0) in
@@ -274,6 +282,15 @@ and docstring_and_body node body s =
   let body = Option.fold ~some:(fun _ -> List.tl body) ~none:body docstring in
   Base.List.fold ~init:s ~f:statement body
 
+and _write_fstring_inner s node =
+  let open Expression in
+  match node with
+  | JoinedStr { values; _ } -> Base.List.fold values ~init:s ~f:_write_fstring_inner
+  | Constant { value; _ } ->
+    State.(s ++= constant value)
+  | FormattedValue _ -> expr s node
+  | _ -> raise (UnexpectedNode "fstring_inner")
+
 and statement (s : State.t) stmt =
   let open Statement in
   let open State in
@@ -345,6 +362,17 @@ and statement (s : State.t) stmt =
     Base.Option.fold else_opt ~init:s ~f:(fun s stmt ->
       let s = fill s "else" in
       block s (fun s -> statement s stmt))
+  | Raise { exc; cause; location } ->
+    let s = fill s "raise" in
+    (* Node without exception but cause *)
+    if Option.is_none exc && Option.is_some cause
+    then
+      raise
+        (CauseWithoutException (Sexplib0.Sexp.to_string (Location.sexp_of_t location)));
+    let s = State.(s ++= " ") in
+    let s = Base.Option.fold ~init:s ~f:expr exc in
+    let s = Base.Option.fold ~init:s ~f:(fun s c -> expr (s ++= " from ") c) cause in
+    s
   | _x -> noop_state s
 
 and expr (s : State.t) e =
@@ -414,6 +442,63 @@ and expr (s : State.t) e =
         expr s e)
     in
     require_parens s Precedence.Cmp node_prec f
+  | JoinedStr { values; _ } as node ->
+    let s = State.(s ++= "f") in
+    if s.avoid_backslashes
+    then (
+      let f s = _write_fstring_inner s node in
+      let buffer = buffered f in
+      _write_str_avoiding_backslashes s buffer.source)
+    else (
+      let f e =
+        let buffer = buffered (fun s -> _write_fstring_inner s e) in
+        ( buffer.source
+        , match e with
+          | Constant _ -> true
+          | _ -> false )
+      in
+      let fstring_parts = Base.List.map values ~f in
+      (* Base.List.iter fstring_parts ~f:(fun (fstr, is_constant) -> Stdio.printf "No backslash|%s|%b\n" fstr is_constant); *)
+      (* Stdio.Out_channel.flush Stdio.stdout; *)
+      let new_fstring_parts, quote_types =
+        Base.List.fold
+          fstring_parts
+          ~init:([], all_quotes)
+          ~f:(fun acc (str, is_constant) ->
+          let new_fstring_parts, quote_types = acc in
+          let new_fstring, quote_types =
+            _str_literal_helper str is_constant quote_types
+          in
+          new_fstring :: new_fstring_parts, quote_types)
+      in
+      let new_fstring_parts = List.rev new_fstring_parts in
+      let quote_type = quote_types.(0) in
+      s ++= (quote_type ^ String.concat new_fstring_parts ^ quote_type))
+  | FormattedValue { value; conversion; format_spec; _ } ->
+    Stdio.printf "*******Formatted\n";
+    Stdio.Out_channel.flush Stdio.stdout;
+    let unparse_inner inner =
+      let s = { State.default with avoid_backslashes = true } in
+      Base.Hashtbl.update s.expr_precedences inner ~f:(fun _ ->
+        Option.value_exn (Precedence.of_enum (Precedence.to_enum Precedence.Test + 1)));
+      expr s inner
+    in
+    let f s =
+      let e = unparse_inner value in
+      let src = e.source in
+      if Base.String.contains src '\\'
+      then raise (ValueError "Unable to avoid backslash in f-string expression part");
+      let s = if String.equal (Base.String.prefix src 1) "{" then s ++= " " else s in
+      let s = State.(s ++= src) in
+      let s =
+        if not (Int.equal conversion (-1))
+        then s ++= String.of_char (Char.of_int_exn conversion)
+        else s
+      in
+      Base.Option.fold format_spec ~init:s ~f:(fun s fmt ->
+        _write_fstring_inner (s ++= ":") fmt)
+    in
+    delimit s "{" "}" f
   | _ -> noop_state s
 
 and py_module s m =
