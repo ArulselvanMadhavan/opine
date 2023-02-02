@@ -37,10 +37,15 @@ let parse_module enable_type_comment filename =
       Parser.Concrete.parse_module ~context ~enable_type_comment content)
   in
   handle_result result ~f:(fun ast ->
-    Format.printf "%a\n" Sexplib.Sexp.pp_hum (Concrete.Module.sexp_of_t ast);
+    let s, ast =
+      Transformations.Stats.py_module Transformations.Stats.State.default ast
+    in
+    Format.printf
+      "Methods count:%s\n"
+      (Sexplib0.Sexp.to_string (Transformations.Stats.State.sexp_of_t s));
     let src = (Opine.Unparse.py_module Opine.Unparse.State.default ast).source in
-    Stdio.Out_channel.write_all "pyre.txt" ~data:src;
-    Format.printf "%s\n" src)
+    Stdio.Out_channel.write_all "pyre.txt" ~data:src
+    (* Format.printf "%s\n" src *))
 ;;
 
 let parse_expression filename =
