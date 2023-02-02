@@ -38,7 +38,9 @@ let parse_module enable_type_comment filename =
   in
   handle_result result ~f:(fun ast ->
     Format.printf "%a\n" Sexplib.Sexp.pp_hum (Concrete.Module.sexp_of_t ast);
-    Format.printf "%s\n" (Opine.Unparse.py_module Opine.Unparse.State.default ast).source)
+    let src = (Opine.Unparse.py_module Opine.Unparse.State.default ast).source in
+    Stdio.Out_channel.write_all "pyre.txt" ~data:src;
+    Format.printf "%s\n" src)
 ;;
 
 let parse_expression filename =

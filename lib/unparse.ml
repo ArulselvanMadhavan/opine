@@ -66,6 +66,13 @@ let binop_precedences =
   ht
 ;;
 
+let boolop_precedences =
+  let ht = Base.Hashtbl.create ~size:default_hash_size (module BooleanOperator) in
+  Base.Hashtbl.update ht (BooleanOperator.make_and_of_t ()) ~f:(fun _ -> Precedence.And);
+  Base.Hashtbl.update ht (BooleanOperator.make_or_of_t ()) ~f:(fun _ -> Precedence.Or);
+  ht
+;;
+
 let expr_precedences : (Expression.t, Precedence.t) Base.Hashtbl.t =
   Base.Hashtbl.create ~size:default_hash_size (module Expression)
 ;;
@@ -133,7 +140,9 @@ let comp_op o =
   let open ComparisonOperator in
   match o with
   | NotEq -> "!="
-  | _ -> ""
+  | IsNot -> "is not"
+  | Eq -> "=="
+  | _ -> noop
 ;;
 
 let unary_op o =
@@ -143,6 +152,13 @@ let unary_op o =
   | Invert -> "~"
   | UAdd -> "+"
   | USub -> "-"
+;;
+
+let bool_op o =
+  let open BooleanOperator in
+  match o with
+  | And -> "and"
+  | Or -> "or"
 ;;
 
 let bin_op o =
@@ -173,8 +189,8 @@ let constant c =
   match c with
   | Integer i -> Int.to_string i
   | String s -> repr s
-  | True | False -> Sexplib0.Sexp.to_string (Constant.sexp_of_t c)
   | Float f -> Float.to_string f
+  | True | False | None -> Sexplib0.Sexp.to_string (Constant.sexp_of_t c)
   | _ -> noop
 ;;
 
@@ -328,13 +344,16 @@ and arguments s xs =
   in
   (* kwargs *)
   let s =
-    if List.length all_args > 0
-       || Option.is_some xs.vararg
-       || List.length xs.kwonlyargs > 0
-    then s ++= ", "
-    else s
+    Base.Option.fold xs.kwarg ~init:s ~f:(fun s a ->
+      let s =
+        if List.length all_args > 0
+           || Option.is_some xs.vararg
+           || List.length xs.kwonlyargs > 0
+        then s ++= ", "
+        else s
+      in
+      arg (s ++= "**") a)
   in
-  let s = Base.Option.fold xs.kwarg ~init:s ~f:(fun s a -> arg (s ++= "**") a) in
   s
 
 and import_alias ia =
@@ -346,13 +365,13 @@ and process_names names =
   let aliases = Base.List.map names ~f:import_alias in
   Base.String.concat ~sep:", " aliases
 
-and function_helper s node ~decorator_list ~name ~args ~body ~def =
+and function_helper s node ~decorator_list ~name ~args ~body ~returns ~def =
   let open State in
   let s = s ++= maybe_newline s in
   let s = Base.List.fold ~init:s ~f:(fun s e -> expr (fill s "@") e) decorator_list in
   let s = fill s (def ^ " " ^ Identifier.to_string name) in
   let s = delimit s "(" ")" (fun s -> arguments s args) in
-  (* let process_body s = Base.List.fold ~init:s ~f:statement body in *)
+  let s = Base.Option.fold returns ~init:s ~f:(fun s r -> expr (s ++= " -> ") r) in
   let s = block s (docstring_and_body node body) in
   s
 
@@ -369,6 +388,14 @@ and _write_fstring_inner s node =
   | Constant { value; _ } -> State.(s ++= constant value)
   | FormattedValue _ -> expr s node
   | _ -> raise (UnexpectedNode "fstring_inner")
+
+and items_view s items =
+  let open State in
+  if List.length items == 1
+  then expr s (List.hd items) ++= "," (* End with a comma *)
+  else
+    Base.List.foldi items ~init:s ~f:(fun idx s a ->
+      expr (if idx > 0 then s ++= ", " else s) a)
 
 and statement (s : State.t) stmt =
   let open Statement in
@@ -407,8 +434,8 @@ and statement (s : State.t) stmt =
     (* body *)
     let s = block s (docstring_and_body node body) in
     s
-  | FunctionDef { decorator_list; name; args; body; _ } as node ->
-    function_helper s node ~decorator_list ~name ~args ~body ~def:"def"
+  | FunctionDef { decorator_list; name; args; body; returns; _ } as node ->
+    function_helper s node ~decorator_list ~name ~args ~body ~returns ~def:"def"
   | Assign { targets; value; _ } ->
     let s = fill s "" in
     let process_target s tgt =
@@ -427,20 +454,31 @@ and statement (s : State.t) stmt =
     let s = fill s "if " in
     let s = expr s test in
     let s = block s (fun s -> Base.List.fold body ~init:s ~f:statement) in
-    let else_opt = Base.List.last orelse in
-    let elif_opt = Base.List.drop_last orelse in
-    let s =
-      Base.Option.fold elif_opt ~init:s ~f:(fun s elifs ->
-        Base.List.fold elifs ~init:s ~f:(fun s stmt ->
-          match stmt with
-          | If { test; body; _ } ->
-            let s = expr (fill s "elif ") test in
-            block s (fun s -> Base.List.fold ~init:s ~f:statement body)
-          | _ -> s))
-    in
-    Base.Option.fold else_opt ~init:s ~f:(fun s stmt ->
+    (* Collapse nested if into elif *)
+    let s = ref s in
+    let orelse_list = ref orelse in
+    while
+      List.length !orelse_list == 1
+      &&
+      match List.hd !orelse_list with
+      | If _ -> true
+      | _ -> false
+    do
+      let hd = List.hd !orelse_list in
+      match hd with
+      | If { test; body; orelse; _ } ->
+        orelse_list := orelse;
+        s := expr (fill !s "elif ") test;
+        s := block !s (fun s -> Base.List.fold ~init:s ~f:statement body)
+      | _ -> ()
+    done;
+    let s = !s in
+    let orelse = !orelse_list in
+    if List.length orelse > 0 (* No more if statements *)
+    then (
       let s = fill s "else" in
-      block s (fun s -> statement s stmt))
+      block s (fun s -> Base.List.fold orelse ~init:s ~f:statement))
+    else s
   | Raise { exc; cause; location } ->
     let s = fill s "raise" in
     (* Node without exception but cause *)
@@ -452,6 +490,8 @@ and statement (s : State.t) stmt =
     let s = Base.Option.fold ~init:s ~f:expr exc in
     let s = Base.Option.fold ~init:s ~f:(fun s c -> expr (s ++= " from ") c) cause in
     s
+  | Return { value; _ } ->
+    Base.Option.fold value ~init:(fill s "return") ~f:(fun s a -> expr (s ++= " ") a)
   | _x -> noop_state s
 
 and expr (s : State.t) e =
@@ -465,7 +505,9 @@ and expr (s : State.t) e =
     in
     let f s =
       let s = s ++= unary_op op in
-      let s = if Precedence.(compare op_prec Precedence.Not) <> 0 then s ++= " " else s in
+      let s =
+        if Precedence.(compare op_prec Precedence.Factor) <> 0 then s ++= " " else s
+      in
       Base.Hashtbl.update s.expr_precedences operand ~f:(fun _ -> op_prec);
       expr s operand
     in
@@ -574,8 +616,6 @@ and expr (s : State.t) e =
           | _ -> false )
       in
       let fstring_parts = Base.List.map values ~f in
-      (* Base.List.iter fstring_parts ~f:(fun (fstr, is_constant) -> Stdio.printf "No backslash|%s|%b\n" fstr is_constant); *)
-      (* Stdio.Out_channel.flush Stdio.stdout; *)
       let new_fstring_parts, quote_types =
         Base.List.fold
           fstring_parts
@@ -591,8 +631,6 @@ and expr (s : State.t) e =
       let quote_type = quote_types.(0) in
       s ++= (quote_type ^ String.concat new_fstring_parts ^ quote_type))
   | FormattedValue { value; conversion; format_spec; _ } ->
-    Stdio.printf "*******Formatted\n";
-    Stdio.Out_channel.flush Stdio.stdout;
     let unparse_inner inner =
       let s = { State.default with avoid_backslashes = true } in
       Base.Hashtbl.update s.expr_precedences inner ~f:(fun _ ->
@@ -615,6 +653,52 @@ and expr (s : State.t) e =
         _write_fstring_inner (s ++= ":") fmt)
     in
     delimit s "{" "}" f
+  | Subscript { value; slice; _ } ->
+    Base.Hashtbl.update s.expr_precedences ~f:(fun _ -> Precedence.Atom) value;
+    let s = expr s value in
+    let process_slice s =
+      match slice with
+      | Tuple { elts; _ } -> if List.length elts > 0 then items_view s elts else s
+      | _ -> expr s slice
+    in
+    delimit s "[" "]" process_slice
+  | Tuple { elts; _ } as node ->
+    let f s = items_view s elts in
+    let node_prec = Base.Hashtbl.find s.expr_precedences node in
+    let node_prec = Option.value node_prec ~default:Precedence.Test in
+    let condition =
+      List.length elts = 0 || Precedence.compare node_prec Precedence.Tuple > 0
+    in
+    delimit_if s "(" ")" condition f
+  | List { elts; _ } ->
+    let f s =
+      Base.List.foldi elts ~init:s ~f:(fun idx s e ->
+        if idx > 0 then expr (s ++= ", ") e else expr s e)
+    in
+    delimit s "[" "]" f
+  | BoolOp { op; values; _ } as node ->
+    let op_prec = Base.Hashtbl.find boolop_precedences op in
+    let op_prec = Option.value op_prec ~default:Precedence.Test in
+    let node_prec = Base.Hashtbl.find s.expr_precedences node in
+    let node_prec = Option.value node_prec ~default:Precedence.Test in
+    let f s =
+      let increasing_level_traverse s op_prec e =
+        let op_prec = Option.value_exn (Precedence.next op_prec) in
+        Base.Hashtbl.update s.expr_precedences e ~f:(fun _ -> op_prec);
+        expr s e, op_prec
+      in
+      let s, _ =
+        Base.List.foldi values ~init:(s, op_prec) ~f:(fun idx (s, op_prec) e ->
+          let s = if idx > 0 then s ++= (" " ^ bool_op op ^ " ") else s in
+          increasing_level_traverse s op_prec e)
+      in
+      s
+    in
+    require_parens s op_prec node_prec f
+  | Starred { value; _ } ->
+    let s = s ++= "*" in
+    Base.Hashtbl.set ~key:value ~data:Precedence.Expr s.expr_precedences;
+    expr s value
   | _ -> noop_state s
 
 and py_module s m =
