@@ -281,7 +281,7 @@ let rec arg (s : State.t) a =
   let open State in
   let id = Identifier.to_string a.identifier in
   let s = s ++= id in
-  Option.fold ~none:s ~some:(fun a -> expr (s ++= ":") a) a.annotation
+  Option.fold ~none:s ~some:(fun a -> expr (s ++= ": ") a) a.annotation
 
 and arguments s xs =
   let open Arguments in
@@ -307,7 +307,35 @@ and arguments s xs =
     (* check pos only *)
     if idx == pos_only_idx then s ++= ", /" else s
   in
-  Base.List.foldi all_args ~init:s ~f:process_arg
+  let s = Base.List.foldi all_args ~init:s ~f:process_arg in
+  (* varargs, or bare '*' if no varargs but keyword-only arguments present *)
+  let s =
+    if Option.is_some xs.vararg || List.length xs.kwonlyargs > 0
+    then (
+      let s = if List.length all_args > 0 then s ++= ", " else s in
+      let s = s ++= "*" in
+      let s = Base.Option.fold xs.vararg ~init:s ~f:arg in
+      s)
+    else s
+  in
+  (* kwonlyargs *)
+  let zipped = Base.List.zip_exn xs.kwonlyargs xs.kw_defaults in
+  let s =
+    Base.List.fold zipped ~init:s ~f:(fun s (a, d) ->
+      let s = s ++= ", " in
+      let s = arg s a in
+      Base.Option.fold ~init:s ~f:(fun s d -> expr (s ++= "=") d) d)
+  in
+  (* kwargs *)
+  let s =
+    if List.length all_args > 0
+       || Option.is_some xs.vararg
+       || List.length xs.kwonlyargs > 0
+    then s ++= ", "
+    else s
+  in
+  let s = Base.Option.fold xs.kwarg ~init:s ~f:(fun s a -> arg (s ++= "**") a) in
+  s
 
 and import_alias ia =
   let open ImportAlias in
@@ -493,15 +521,25 @@ and expr (s : State.t) e =
     let s = s ++= "." in
     let s = s ++= Identifier.to_string attr in
     s
-  | Call { func; args; _ } ->
+  | Call { func; args; keywords; _ } ->
     (* self.set_precedence(_Precedence.ATOM, node.func) *)
     Hashtbl.update s.expr_precedences func ~f:(fun _ -> Precedence.Atom);
     let s = expr s func in
     let process_call s =
-      Base.List.foldi
-        ~init:s
-        ~f:(fun idx s a -> expr (if idx > 0 then s ++= ", " else s) a)
-        args
+      let s =
+        Base.List.foldi
+          ~init:s
+          ~f:(fun idx s a -> expr (if idx > 0 then s ++= ", " else s) a)
+          args
+      in
+      Base.List.foldi keywords ~init:s ~f:(fun idx s a ->
+        let s = if idx > 0 || List.length args > 0 then s ++= ", " else s in
+        let s =
+          if Option.is_none a.arg
+          then s ++= "**"
+          else s ++= (Identifier.to_string (Option.value_exn a.arg) ^ "=")
+        in
+        expr s a.value)
     in
     let s = delimit s "(" ")" process_call in
     s
