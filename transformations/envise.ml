@@ -24,6 +24,7 @@ let add_from_float s body =
         ()
     ]
   in
+  let qattn_id = Identifier.make_t "qattn" () in
   let init_args = Base.Option.value_exn State.(s.init_args) in
   let build_body =
     let qattn =
@@ -37,7 +38,7 @@ let add_from_float s body =
       let targets =
         [ Expression.make_name_of_t
             ~location
-            ~id:(Identifier.make_t "qattn" ())
+            ~id:qattn_id
             ~ctx:(ExpressionContext.make_load_of_t ())
             ()
         ]
@@ -65,7 +66,17 @@ let add_from_float s body =
       let value = Expression.make_call_of_t ~location ~func:cls_name ~keywords () in
       Statement.make_assign_of_t ~location ~targets ~value ()
     in
-    [ qattn ]
+    let return_ =
+      let value =
+        Expression.make_name_of_t
+          ~location
+          ~id:qattn_id
+          ~ctx:(ExpressionContext.make_load_of_t ())
+          ()
+      in
+      Statement.make_return_of_t ~location ~value ()
+    in
+    [ qattn; return_ ]
   in
   let from_float =
     make_functiondef_of_t
