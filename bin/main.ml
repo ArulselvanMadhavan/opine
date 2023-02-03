@@ -37,9 +37,7 @@ let parse_module enable_type_comment filename =
       Parser.Concrete.parse_module ~context ~enable_type_comment content)
   in
   handle_result result ~f:(fun ast ->
-    let s, _ast =
-      Transformations.Stats.py_module Transformations.Stats.State.default ast
-    in
+    let s = Transformations.Stats.py_module Transformations.Stats.State.default ast in
     let ast = Transformations.Envise.py_module s ast in
     Format.printf "%a\n" Sexplib.Sexp.pp_hum (Concrete.Module.sexp_of_t ast);
     Format.printf

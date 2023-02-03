@@ -100,12 +100,17 @@ let rec py_module (s : State.t) m =
 and statement s stmt =
   match stmt with
   | ClassDef { body; location; name; bases; keywords; decorator_list } ->
+    let load_ctx = ExpressionContext.make_load_of_t () in
     let body = add_from_float s body in
+    let base =
+      Expression.make_name_of_t ~location:default_loc ~id:name ~ctx:load_ctx ()
+    in    
+    let name = Identifier.make_t ("Idiom" ^ Identifier.to_string name) () in
     let stmt =
       Statement.make_classdef_of_t
         ~location
         ~name
-        ~bases
+        ~bases:(base :: bases)
         ~keywords
         ~decorator_list
         ~body
