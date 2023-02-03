@@ -7,7 +7,38 @@ exception Unexpected of string
 let default_pos = Position.make_t ~line:0 ~column:0 ()
 let default_loc = Location.make_t ~start:default_pos ~stop:default_pos ()
 let self_id = Identifier.make_t "self" ()
+let self_arg = Argument.make_t ~location:default_loc ~identifier:self_id ()
 let protected_param p = Identifier.make_t ("_" ^ p) ()
+
+let name_l name =
+  Expression.make_name_of_t
+    ~location:default_loc
+    ~id:name
+    ~ctx:(ExpressionContext.make_load_of_t ())
+    ()
+;;
+
+let property_decorator =
+  Expression.make_name_of_t
+    ~location:default_loc
+    ~id:(Identifier.make_t "property" ())
+    ~ctx:(ExpressionContext.make_load_of_t ())
+    ()
+;;
+
+let self_attr ~attr =
+  Expression.make_attribute_of_t
+    ~location:default_loc
+    ~value:
+      (Expression.make_name_of_t
+         ~location:default_loc
+         ~id:self_id
+         ~ctx:(ExpressionContext.make_load_of_t ())
+         ())
+    ~attr
+    ~ctx:(ExpressionContext.make_store_of_t ())
+    ()
+;;
 
 let add_from_float s body =
   let open Statement in
@@ -92,7 +123,7 @@ let add_from_float s body =
   List.append body [ from_float ]
 ;;
 
-let add_envise_args func =
+let handle_init func =
   let open Statement in
   match func with
   | FunctionDef { args; body; decorator_list; returns; type_comment; name; _ } ->
@@ -125,20 +156,7 @@ let add_envise_args func =
         ?kwarg:args.kwarg
         ()
     in
-    let targets =
-      [ Expression.make_attribute_of_t
-          ~location
-          ~value:
-            (Expression.make_name_of_t
-               ~location
-               ~id:self_id
-               ~ctx:(ExpressionContext.make_load_of_t ())
-               ())
-          ~attr:(protected_param param_name)
-          ~ctx:(ExpressionContext.make_store_of_t ())
-          ()
-      ]
-    in
+    let targets = [ self_attr ~attr:(protected_param param_name) ] in
     let value =
       Expression.make_name_of_t
         ~location
@@ -160,6 +178,26 @@ let add_envise_args func =
   | _ -> func
 ;;
 
+let add_getters param_name =
+  let location = default_loc in
+  let decorator_list = [ property_decorator ] in
+  let args = Arguments.make_t ~args:[ self_arg ] () in
+  let body =
+    [ Statement.make_return_of_t
+        ~location
+        ~value:(self_attr ~attr:(protected_param param_name))
+        ()
+    ]
+  in
+  Statement.make_functiondef_of_t
+    ~location
+    ~name:(Identifier.make_t param_name ())
+    ~decorator_list
+    ~args
+    ~body
+    ()
+;;
+
 (* body *)
 let rec py_module (s : State.t) m =
   let open Module in
@@ -168,26 +206,26 @@ let rec py_module (s : State.t) m =
 
 and statement s stmt =
   match stmt with
-  | ClassDef { body; location; name; bases; keywords; decorator_list } ->
-    let load_ctx = ExpressionContext.make_load_of_t () in
+  | ClassDef { body; location; name; keywords; decorator_list; _ } ->
     let body = Array.of_list body in
     (* Update init method *)
     let init_idx = Hashtbl.find_exn s.method_idx "__init__" in
     let init_func = body.(init_idx) in
-    let init_func = add_envise_args init_func in
+    let init_func = handle_init init_func in
     body.(init_idx) <- init_func;
     (* Update forward method *)
     let body = Array.to_list body in
-    let base =
-      Expression.make_name_of_t ~location:default_loc ~id:name ~ctx:load_ctx ()
-    in
+    let orig_base = name_l name in
+    let immut_base = name_l (Identifier.make_t "ImmutableDtypeMixin" ()) in
     let name = Identifier.make_t ("Idiom" ^ Identifier.to_string name) () in
+    let getter = add_getters "run_on_envise" in
+    let body = List.append body [ getter ] in
     let body = add_from_float s body in
     let stmt =
       Statement.make_classdef_of_t
         ~location
         ~name
-        ~bases:(base :: bases)
+        ~bases:[ immut_base; orig_base ]
         ~keywords
         ~decorator_list
         ~body
