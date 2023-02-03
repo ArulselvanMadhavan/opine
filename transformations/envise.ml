@@ -6,6 +6,8 @@ exception Unexpected of string
 
 let default_pos = Position.make_t ~line:0 ~column:0 ()
 let default_loc = Location.make_t ~start:default_pos ~stop:default_pos ()
+let self_id = Identifier.make_t "self" ()
+let protected_param p = Identifier.make_t ("_" ^ p) ()
 
 let add_from_float s body =
   let open Statement in
@@ -93,16 +95,71 @@ let add_from_float s body =
 let add_envise_args func =
   let open Statement in
   match func with
-  | FunctionDef {args;body;decorator_list;returns;type_comment;name;_} ->
+  | FunctionDef { args; body; decorator_list; returns; type_comment; name; _ } ->
     let location = default_loc in
-    let identifier = (Identifier.make_t "run_on_envise" ()) in
-    let annotation = Expression.make_name_of_t ~location ~id:(Identifier.make_t "bool" ()) ~ctx:(ExpressionContext.make_load_of_t ()) () in
-    let run_on_envise = Argument.make_t ~location ~identifier ~annotation () in
-    let false_def = Expression.make_constant_of_t ~location ~value:(Constant.make_false_of_t ()) ~kind:"bool" () in
-    let args = Arguments.make_t ~args:(List.append args.args [run_on_envise]) ~posonlyargs:args.posonlyargs ~kw_defaults:args.kw_defaults ~kwonlyargs:args.kwonlyargs ~defaults:(List.append args.defaults [false_def]) ?vararg:args.vararg ?kwarg:args.kwarg () in
-    Statement.make_functiondef_of_t ~location ~args ~body ~decorator_list ~name ?returns ?type_comment ()
+    let param_name, param_value = "run_on_envise", "DEFAULT_RUN_ON_ENVISE" in
+    let identifier = Identifier.make_t param_name () in
+    let annotation =
+      Expression.make_name_of_t
+        ~location
+        ~id:(Identifier.make_t "bool" ())
+        ~ctx:(ExpressionContext.make_load_of_t ())
+        ()
+    in
+    let envise_arg = Argument.make_t ~location ~identifier ~annotation () in
+    let envise_def =
+      Expression.make_name_of_t
+        ~location
+        ~id:(Identifier.make_t param_value ())
+        ~ctx:(ExpressionContext.make_load_of_t ())
+        ()
+    in
+    let args =
+      Arguments.make_t
+        ~args:(List.append args.args [ envise_arg ])
+        ~posonlyargs:args.posonlyargs
+        ~kw_defaults:args.kw_defaults
+        ~kwonlyargs:args.kwonlyargs
+        ~defaults:(List.append args.defaults [ envise_def ])
+        ?vararg:args.vararg
+        ?kwarg:args.kwarg
+        ()
+    in
+    let targets =
+      [ Expression.make_attribute_of_t
+          ~location
+          ~value:
+            (Expression.make_name_of_t
+               ~location
+               ~id:self_id
+               ~ctx:(ExpressionContext.make_load_of_t ())
+               ())
+          ~attr:(protected_param param_name)
+          ~ctx:(ExpressionContext.make_store_of_t ())
+          ()
+      ]
+    in
+    let value =
+      Expression.make_name_of_t
+        ~location
+        ~id:(Identifier.make_t param_value ())
+        ~ctx:(ExpressionContext.make_load_of_t ())
+        ()
+    in
+    let envise_mem = Statement.make_assign_of_t ~location ~targets ~value () in
+    let body = List.append body [ envise_mem ] in
+    Statement.make_functiondef_of_t
+      ~location
+      ~args
+      ~body
+      ~decorator_list
+      ~name
+      ?returns
+      ?type_comment
+      ()
   | _ -> func
-    
+;;
+
 (* body *)
 let rec py_module (s : State.t) m =
   let open Module in
@@ -113,17 +170,19 @@ and statement s stmt =
   match stmt with
   | ClassDef { body; location; name; bases; keywords; decorator_list } ->
     let load_ctx = ExpressionContext.make_load_of_t () in
-    let body = add_from_float s body in
     let body = Array.of_list body in
+    (* Update init method *)
     let init_idx = Hashtbl.find_exn s.method_idx "__init__" in
     let init_func = body.(init_idx) in
     let init_func = add_envise_args init_func in
     body.(init_idx) <- init_func;
+    (* Update forward method *)
     let body = Array.to_list body in
     let base =
       Expression.make_name_of_t ~location:default_loc ~id:name ~ctx:load_ctx ()
     in
     let name = Identifier.make_t ("Idiom" ^ Identifier.to_string name) () in
+    let body = add_from_float s body in
     let stmt =
       Statement.make_classdef_of_t
         ~location
