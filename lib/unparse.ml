@@ -188,7 +188,7 @@ let constant c =
   let open Constant in
   match c with
   | Integer i -> Int.to_string i
-  | String s -> repr s
+  | String s -> "\"" ^ repr s ^ "\""
   | Float f -> Float.to_string f
   | True | False | None -> Sexplib0.Sexp.to_string (Constant.sexp_of_t c)
   | _ -> noop
