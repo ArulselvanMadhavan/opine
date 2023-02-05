@@ -51,6 +51,12 @@ let envise_params =
 let default_pos = Position.make_t ~line:0 ~column:0 ()
 let default_loc = Location.make_t ~start:default_pos ~stop:default_pos ()
 let self_id = Identifier.make_t "self" ()
+let dim_id = Identifier.make_t "dim" ()
+let cls_id = Identifier.make_t "cls" ()
+let mod_id = Identifier.make_t "mod" ()
+let qconfig_id = Identifier.make_t "qconfig" ()
+let softmax_id = Identifier.make_t "Softmax" ()
+let qnn_id = Identifier.make_t "qnn" ()
 let torch_id = Identifier.make_t "torch" ()
 let bmm_id = Identifier.make_t "bmm" ()
 let init_id = Identifier.make_t "__init__" ()
@@ -124,6 +130,29 @@ let self_attr ~attr =
   attr_l ~value ~attr ~ctx:(ExpressionContext.make_store_of_t ()) ()
 ;;
 
+let softmax_keyword_args =
+  let roe = envise_params_arr.(Hashtbl.find_exn envise_params run_on_envise) in
+  let bk = envise_params_arr.(Hashtbl.find_exn envise_params backend) in
+  let st = envise_params_arr.(Hashtbl.find_exn envise_params softmax_type) in
+  let args = [ roe; bk; st ] in
+  let keyword ep =
+    let ep_id = Identifier.make_t EnviseParams.(ep.param_name) () in
+    Keyword.make_t ~location:default_loc ~arg:ep_id ~value:(self_attr ~attr:ep_id) ()
+  in
+  Base.List.map args ~f:keyword
+;;
+
+let keywords_envise =
+  Array.map
+    (Array.filter envise_params_arr ~f:(fun ep -> String.(ep.param_name <> softmax_type)))
+    ~f:(fun ep ->
+      let arg = Identifier.make_t EnviseParams.(ep.param_name) () in
+      let value =
+        attr_l ~value:(attr_l ~value:(name_l mod_id) ~attr:qconfig_id ()) ~attr:arg ()
+      in
+      Keyword.make_t ~location:default_loc ~arg ~value ())
+;;
+
 let return_ ~expr = Statement.make_return_of_t ~location:default_loc ~value:expr ()
 let constant ~value = Expression.make_constant_of_t ~location:default_loc ~value ()
 
@@ -172,8 +201,6 @@ let add_from_float s body =
   let open Statement in
   let name = Identifier.make_t "from_float" () in
   let location = default_loc in
-  let cls_id = Identifier.make_t "cls" () in
-  let mod_id = Identifier.make_t "mod" () in
   let cls_arg = Argument.make_t ~location ~identifier:cls_id () in
   let mod_arg = Argument.make_t ~location ~identifier:mod_id () in
   let args = Arguments.make_t ~args:[ cls_arg; mod_arg ] () in
@@ -204,6 +231,8 @@ let add_from_float s body =
       in
       let args = Base.Option.value_exn (List.tl init_args.args) in
       let keywords = Base.List.map args ~f:keyword_args in
+      (* Add envise args *)
+      let keywords = List.append keywords (Array.to_list keywords_envise) in
       let value = func_call ~func:cls_id ~args:[] ~keywords () in
       Statement.make_assign_of_t ~location ~targets ~value ()
     in
@@ -283,6 +312,70 @@ let transform_bmms func bmm_idxs =
       let bmm_stmt = body.(i) in
       let bmm_stmt = transform_bmm bmm_stmt in
       body.(i) <- bmm_stmt);
+    let body = Array.to_list body in
+    make_functiondef_of_t
+      ~location
+      ~args
+      ~body
+      ~decorator_list
+      ~name
+      ?returns
+      ?type_comment
+      ()
+  | _ -> func
+;;
+
+let rec transform_smax stmt =
+  let open Statement in
+  match stmt with
+  | Assign { value; location; targets; type_comment } ->
+    let value = smax_expr value in
+    make_assign_of_t ~location ~targets ?type_comment ~value ()
+  | If { body; orelse; test; location } ->
+    let body = Base.List.map body ~f:transform_smax in
+    let orelse = Base.List.map orelse ~f:transform_smax in
+    make_if_of_t ~location ~test ~body ~orelse ()
+  | _ -> stmt
+
+and smax_expr e =
+  let open Expression in
+  match e with
+  | Call { func = Attribute { attr; _ }; args; keywords; _ }
+    when String.equal (Identifier.to_string attr) "softmax" ->
+    (* We need a dim arg because it's required in qnn.Softmax but torch doesn't require it*)
+    let dim_value =
+      if Int.equal (List.length args) 2
+      then List.hd_exn (List.tl_exn args)
+      else
+        List.hd_exn
+          (List.filter_map keywords ~f:(fun k ->
+             if String.equal (Identifier.to_string @@ Option.value_exn k.arg) "dim"
+             then Some k.value
+             else None))
+    in
+    let dim_kw = Keyword.make_t ~location:default_loc ~arg:dim_id ~value:dim_value () in
+    let keywords = dim_kw :: softmax_keyword_args in
+    let qnn_smax_call = attr_call ~name:qnn_id ~attr:softmax_id ~args:[] ~keywords () in
+    make_call_of_t ~location:default_loc ~func:qnn_smax_call ~args:[ List.hd_exn args ] ()
+  | Call
+      { func = Attribute { value; attr; location; ctx }; args; keywords; location = loc1 }
+    ->
+    let value = smax_expr value in
+    let attr = make_attribute_of_t ~location ~attr ~value ~ctx () in
+    make_call_of_t ~func:attr ~args ~keywords ~location:loc1 ()
+  | Call { func; _ } -> smax_expr func
+  | _ -> e
+;;
+
+let transform_smaxs func smax_idxs =
+  let open Statement in
+  match func with
+  | FunctionDef { location; args; body; decorator_list; name; returns; type_comment } ->
+    let body = Array.of_list body in
+    List.iter smax_idxs ~f:(fun i ->
+      let smax_stmt = body.(i) in
+      let smax_stmt = transform_smax smax_stmt in
+      body.(i) <- smax_stmt);
     let body = Array.to_list body in
     make_functiondef_of_t
       ~location
@@ -432,7 +525,14 @@ and statement s stmt =
       let mth = body.(method_idx) in
       let bmm_idx = data in
       let mth = transform_bmms mth bmm_idx in
-      body.(method_idx) <- mth);    
+      body.(method_idx) <- mth);
+    (* transform softmaxs *)
+    Hashtbl.iteri s.softmaxs ~f:(fun ~key ~data ->
+      let method_idx = Hashtbl.find_exn s.method_idx key in
+      let mth = body.(method_idx) in
+      let smx_idx = data in
+      let mth = transform_smaxs mth smx_idx in
+      body.(method_idx) <- mth);
     (* Update init method *)
     let init_idx = Hashtbl.find_exn s.method_idx "__init__" in
     let func = body.(init_idx) in

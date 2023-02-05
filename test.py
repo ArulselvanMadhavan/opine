@@ -2,7 +2,19 @@ class Test():
     def __init__(self):
         pass
     def forward(e):
-        attn_weights = torch.bmm(query_states, key_states.transpose(1, 2))
+        if attn_weights.dtype == torch.float16:
+            attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(torch.float16)
+        else:
+            attn_weights = nn.functional.softmax(attn_weights, dim=-1)
+#         attn_weights = torch.nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(torch.float16)
+# qnn.Softmax(
+#             dim=-1,
+#             run_on_envise=run_on_envise,
+#             backend=self.backend,
+#             softmax_type=softmax_type,
+#         )(attn_weights)
+# .to(torch.float16)
+
 # def bmm(self, weight, value):
 #     if not self.run_on_envise:
 #         return torch.bmm(weight, value)

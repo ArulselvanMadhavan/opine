@@ -16,6 +16,7 @@ module State = struct
     ; linear_params : string Hash_set.t
     ; class_name : string
     ; bmms : (string, int list) Hashtbl.t
+    ; softmaxs : (string, int list) Hashtbl.t
     }
   [@@deriving sexp_of, make]
 
@@ -24,6 +25,7 @@ module State = struct
     let members = Hash_set.create ~size:default_hash_size (module String) in
     let linear_params = Hash_set.create ~size:default_hash_size (module String) in
     let bmms = Hashtbl.create ~size:default_hash_size (module String) in
+    let softmaxs = Hashtbl.create ~size:default_hash_size (module String) in
     make_t
       ~methods_count:0
       ~method_idx
@@ -31,6 +33,7 @@ module State = struct
       ~statement_count:0
       ~linear_params
       ~bmms
+      ~softmaxs
       ()
   ;;
 end
@@ -57,6 +60,41 @@ let is_bmm s =
   | _ -> false
 ;;
 
+let rec is_softmax s =
+  let open Statement in
+  match s with
+  | Assign { value; _ } -> is_softmax_expr value
+  | If { body; orelse; _ } ->
+    let loop_until xs =
+      Base.List.fold_until
+        xs
+        ~init:false
+        ~f:(fun _acc a ->
+          let result = is_softmax a in
+          if result then Continue_or_stop.Stop true else Continue_or_stop.Continue false)
+        ~finish:(fun _ -> false)
+    in
+    loop_until body || loop_until orelse
+  | _ -> false
+
+and is_softmax_expr e =
+  let open Expression in
+  match e with
+  | Call { func; _ } -> is_softmax_expr func
+  | Attribute { attr; _ } when String.equal (Identifier.to_string attr) "softmax" -> true
+  | Attribute { value; _ } -> is_softmax_expr value
+  | _ -> false
+;;
+
+let traverse_and_collect name body ~f ht =
+  Base.List.iteri body ~f:(fun i stmt ->
+    if f stmt
+    then
+      Hashtbl.update ht (Identifier.to_string name) ~f:(fun xs ->
+        Base.Option.fold xs ~init:[ i ] ~f:(fun _ xs -> List.cons i xs))
+    else ())
+;;
+
 let rec py_module s m =
   let open Module in
   Base.List.fold m.body ~init:s ~f:statement
@@ -81,12 +119,10 @@ and statement (s : State.t) stmt =
           (if String.equal method_name "__init__" then Some args else s.init_args)
       }
     in
-    Base.List.iteri body ~f:(fun i stmt ->
-      if is_bmm stmt
-      then
-        Hashtbl.update s.bmms (Identifier.to_string name) ~f:(fun xs ->
-          Base.Option.fold xs ~init:[ i ] ~f:(fun _ xs -> List.cons i xs))
-      else ());
+    (* Update bmms *)
+    traverse_and_collect name body ~f:is_bmm s.bmms;
+    (* Update softmax stats *)
+    traverse_and_collect name body ~f:is_softmax s.softmaxs;
     exec_list statement s body
   | Assign { targets; value; _ } ->
     let open Expression in
