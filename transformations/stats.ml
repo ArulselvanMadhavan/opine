@@ -23,31 +23,31 @@ module State = struct
     ; statement_count : int
     ; method_idx : (string, int) Hashtbl.t
     ; init_args : Arguments.t option
-    ; members : string Hash_set.t
     ; linear_params : (string, LinearCallInfo.t list) Hashtbl.t
     ; class_name : string
     ; bmms : (string, int list) Hashtbl.t
     ; softmaxs : (string, int list) Hashtbl.t
     ; matmuls : (string, int list) Hashtbl.t
+          ; members : string Hash_set.t
     }
   [@@deriving sexp_of, make]
 
   let default =
     let method_idx = Hashtbl.create ~size:default_hash_size (module String) in
-    let members = Hash_set.create ~size:default_hash_size (module String) in
     let linear_params = Hashtbl.create ~size:default_hash_size (module String) in
     let bmms = Hashtbl.create ~size:default_hash_size (module String) in
     let softmaxs = Hashtbl.create ~size:default_hash_size (module String) in
     let matmuls = Hashtbl.create ~size:default_hash_size (module String) in
+    let members = Hash_set.create ~size:default_hash_size (module String) in
     make_t
       ~methods_count:0
       ~method_idx
-      ~members
       ~statement_count:0
       ~linear_params
       ~bmms
       ~softmaxs
       ~matmuls
+      ~members
       ()
   ;;
 end
@@ -166,5 +166,10 @@ and statement (s : State.t) stmt =
     in
     Hashtbl.update s.linear_params method_name ~f:(fun _ -> linear_params);
     exec_list statement s body
+  | Assign { targets; _ } ->
+    let self_params = Base.List.map targets ~f:is_self_attr in
+    let self_params = Base.List.filter_opt self_params in
+    Base.List.iter self_params ~f:(fun p -> Hash_set.add s.members p);
+    s
   | _ -> s
 ;;
