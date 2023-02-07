@@ -72,6 +72,7 @@ let super_id = Identifier.make_t "super" ()
 let bool_id = Identifier.make_t "bool" ()
 let envise_id = Identifier.make_t "Envise" ()
 let backend_id = Identifier.make_t backend ()
+let linear_id = Identifier.make_t "Linear" ()
 let quantized_backward_id = Identifier.make_t quantized_backward ()
 let layer_repeat_id = Identifier.make_t layer_repeat ()
 let assign_param_id = Identifier.make_t "assign_param" ()
@@ -152,15 +153,19 @@ let softmax_keyword_args =
   Base.List.map args ~f:keyword
 ;;
 
+let keywords_envise_ids =
+  let filtered_args =
+    Array.filter envise_params_arr ~f:(fun ep -> String.(ep.param_name <> softmax_type))
+  in
+  Array.map filtered_args ~f:(fun ep -> Identifier.make_t EnviseParams.(ep.param_name) ())
+;;
+
 let keywords_envise =
-  Array.map
-    (Array.filter envise_params_arr ~f:(fun ep -> String.(ep.param_name <> softmax_type)))
-    ~f:(fun ep ->
-      let arg = Identifier.make_t EnviseParams.(ep.param_name) () in
-      let value =
-        attr_l ~value:(attr_l ~value:(name_l mod_id) ~attr:qconfig_id ()) ~attr:arg ()
-      in
-      Keyword.make_t ~location:default_loc ~arg ~value ())
+  Array.map keywords_envise_ids ~f:(fun arg ->
+    let value =
+      attr_l ~value:(attr_l ~value:(name_l mod_id) ~attr:qconfig_id ()) ~attr:arg ()
+    in
+    Keyword.make_t ~location:default_loc ~arg ~value ())
 ;;
 
 let return_ ~expr = Statement.make_return_of_t ~location:default_loc ~value:expr ()
@@ -328,11 +333,11 @@ let add_from_float s body =
       in
       Statement.make_return_of_t ~location ~value ()
     in
-    let assign_params = ref [] in
     let linear_params = Hashtbl.find_exn s.linear_params "__init__" in
-    List.iter linear_params ~f:(fun (p, _) ->
+    let assign_params = ref [] in
+    List.iter linear_params ~f:(fun lp ->
       assign_params
-        := assign_param qattn_id mod_id p [ "weight"; "bias" ] :: !assign_params);
+        := assign_param qattn_id mod_id lp.param [ "weight"; "bias" ] :: !assign_params);
     let assign_params = List.concat !assign_params in
     List.append (qattn :: assign_params) [ return_ ]
   in
@@ -491,8 +496,22 @@ let transform_smaxs func smax_idxs =
   | _ -> func
 ;;
 
-let handle_init ~cls_name ~func =
+let add_linear_calls xs =
   let open Statement in
+  let open LinearCallInfo in
+  let f lp =
+    let targets = [ self_attr ~attr:(Identifier.make_t lp.param ()) ] in
+    let envise_kw = Array.map keywords_envise_ids ~f:(fun id -> Keyword.make_t ~location:default_loc ~arg:id ~value:(self_attr ~attr:id) ()) in
+    let keywords = List.append lp.keywords (Array.to_list envise_kw) in
+    let value = attr_call ~name:qnn_id ~attr:linear_id ~args:lp.args ~keywords () in
+    make_assign_of_t ~location:default_loc ~targets ~value ()
+  in
+  List.map xs ~f
+;;
+
+let handle_init s ~cls_name ~func =
+  let open Statement in
+  let open State in
   match func with
   | FunctionDef { args; decorator_list; returns; type_comment; name; _ } ->
     let location = default_loc in
@@ -559,8 +578,8 @@ let handle_init ~cls_name ~func =
     let envise_args = List.map envise_info ~f:(fun (a, _, _) -> a) in
     let envise_defaults = List.map envise_info ~f:(fun (_, d, _) -> d) in
     let envise_stmts = List.map envise_info ~f:(fun (_, _, s) -> s) in
-    (* let linear_params = List.map (Hash_set.to_list s.linear_params) ~f: *)
-    let body = super_init :: envise_stmts in
+    let linear_stmts = add_linear_calls (Hashtbl.find_exn s.linear_params "__init__") in
+    let body = super_init :: List.append envise_stmts linear_stmts in
     let args =
       Arguments.make_t
         ~args:(List.append args.args envise_args)
@@ -647,7 +666,7 @@ and statement s stmt =
     (* Update init method *)
     let init_idx = Hashtbl.find_exn s.method_idx "__init__" in
     let func = body.(init_idx) in
-    let init_func = handle_init ~cls_name ~func in
+    let init_func = handle_init s ~cls_name ~func in
     body.(init_idx) <- init_func;
     (* Update forward method *)
     let fwd_idx = Hashtbl.find_exn s.method_idx "forward" in
