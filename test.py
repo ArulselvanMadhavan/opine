@@ -1,3 +1,13 @@
+self.lp.softmax_type = st
+# self.out_proj = qnn.Linear(
+#     embed_dim,
+#     embed_dim,
+#     bias=bias,
+#     layer_repeat=layer_repeat,
+#     quantized_backward=quantized_backward,
+#     run_on_envise=run_on_envise,
+#     backend=backend,
+# )
 # def tiled_nd_gemm(self, weight, value):
 #     """Tiled GEMM allowing 1-d inputs.
 #     Arguments:
@@ -22,11 +32,12 @@
 #     if orig_value.ndim == 1:
 #         output = output.squeeze(-1)
 #     return output
-class Test():
-    def __init__(self):
-        pass
-    def forward(e):
-        attn_output = unshape(torch.matmul(attn_weights, value_states)) 
+# class Test():
+#     def __init__(self):
+#         pass
+#     def forward(e):
+#         attn_output = unshape(torch.matmul(attn_weights, value_states))
+        
         #         attn_output = torch.bmm(attn_probs, value_states)
 #         attn_output = unshape(torch.matmul(attn_weights, value_states))
 #         attn_weights = nn.functional.softmax(scores.float(), dim=-1).type_as(

@@ -72,7 +72,9 @@ let super_id = Identifier.make_t "super" ()
 let bool_id = Identifier.make_t "bool" ()
 let envise_id = Identifier.make_t "Envise" ()
 let backend_id = Identifier.make_t backend ()
+let register_id = Identifier.make_t "register" ()
 let linear_id = Identifier.make_t "Linear" ()
+let setter_id = Identifier.make_t "setter" ()
 let quantized_backward_id = Identifier.make_t quantized_backward ()
 let layer_repeat_id = Identifier.make_t layer_repeat ()
 let assign_param_id = Identifier.make_t "assign_param" ()
@@ -105,6 +107,8 @@ let property_decorator =
 let attr_l ?(ctx = ExpressionContext.make_load_of_t ()) ~value ~attr () =
   Expression.make_attribute_of_t ~location:default_loc ~attr ~value ~ctx ()
 ;;
+
+let param_setter_decorator eparam = attr_l ~value:(name_l eparam) ~attr:setter_id ()
 
 let attr_call ~name ~attr ~args ?(keywords = []) () =
   Expression.make_call_of_t
@@ -189,6 +193,14 @@ let not_run_on_envise =
     ~op:(UnaryOperator.make_not_of_t ())
     ~operand:test
     ()
+;;
+
+let backend_register =
+  let func = attr_l ~attr:register_id ~value:(self_attr ~attr:backend_id) () in
+  let e =
+    Expression.make_call_of_t ~location:default_loc ~func ~args:[ name_l self_id ] ()
+  in
+  Statement.make_expr_of_t ~location:default_loc ~value:e ()
 ;;
 
 let add_method ~name method_params body =
@@ -501,7 +513,10 @@ let add_linear_calls xs =
   let open LinearCallInfo in
   let f lp =
     let targets = [ self_attr ~attr:(Identifier.make_t lp.param ()) ] in
-    let envise_kw = Array.map keywords_envise_ids ~f:(fun id -> Keyword.make_t ~location:default_loc ~arg:id ~value:(self_attr ~attr:id) ()) in
+    let envise_kw =
+      Array.map keywords_envise_ids ~f:(fun id ->
+        Keyword.make_t ~location:default_loc ~arg:id ~value:(self_attr ~attr:id) ())
+    in
     let keywords = List.append lp.keywords (Array.to_list envise_kw) in
     let value = attr_call ~name:qnn_id ~attr:linear_id ~args:lp.args ~keywords () in
     make_assign_of_t ~location:default_loc ~targets ~value ()
@@ -580,6 +595,7 @@ let handle_init s ~cls_name ~func =
     let envise_stmts = List.map envise_info ~f:(fun (_, _, s) -> s) in
     let linear_stmts = add_linear_calls (Hashtbl.find_exn s.linear_params "__init__") in
     let body = super_init :: List.append envise_stmts linear_stmts in
+    let body = List.append body [ backend_register ] in
     let args =
       Arguments.make_t
         ~args:(List.append args.args envise_args)
@@ -623,8 +639,45 @@ let add_getters param_name =
     ()
 ;;
 
+let add_setters param_name (linear_params : LinearCallInfo.t list) =
+  let location = default_loc in
+  let decorator_list = [ param_setter_decorator param_name ] in
+  let args =
+    Arguments.make_t
+      ~args:[ self_arg; Argument.make_t ~location:default_loc ~identifier:param_name () ]
+      ()
+  in
+  let rhs = name_l param_name in
+  let self_assign =
+    Statement.make_assign_of_t
+      ~location:default_loc
+      ~targets:[ self_attr ~attr:(prot_param_id (Identifier.to_string param_name)) ]
+      ~value:rhs
+      ()
+  in
+  let assigns =
+    List.map linear_params ~f:(fun lp ->
+      let value = self_attr ~attr:(Identifier.make_t lp.param ()) in
+      let targets = [ attr_l ~attr:param_name ~value () ] in
+      Statement.make_assign_of_t ~location:default_loc ~targets ~value:rhs ())
+  in
+  let body = self_assign :: assigns in
+  Statement.make_functiondef_of_t
+    ~location
+    ~name:param_name
+    ~decorator_list
+    ~args
+    ~body
+    ()
+;;
+
 let ep_getters =
   Array.map envise_params_arr ~f:(fun ep -> add_getters ep.param_name) |> Array.to_list
+;;
+
+let ep_setters linear_params =
+  Array.map keywords_envise_ids ~f:(fun ep -> add_setters ep linear_params)
+  |> Array.to_list
 ;;
 
 let transformations s =
@@ -677,6 +730,9 @@ and statement s stmt =
     let body = Array.to_list body in
     let immut_base = name_l (Identifier.make_t "ImmutableDtypeMixin" ()) in
     let body = List.append body ep_getters in
+    let body =
+      List.append body (ep_setters (Hashtbl.find_exn s.linear_params "__init__"))
+    in
     let body = add_from_float s body in
     let body = List.append body [ add_bmm; add_tiled_nd_gemm ] in
     let stmt =

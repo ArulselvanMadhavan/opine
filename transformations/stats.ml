@@ -28,7 +28,7 @@ module State = struct
     ; bmms : (string, int list) Hashtbl.t
     ; softmaxs : (string, int list) Hashtbl.t
     ; matmuls : (string, int list) Hashtbl.t
-          ; members : string Hash_set.t
+    ; members : string Hash_set.t
     }
   [@@deriving sexp_of, make]
 
