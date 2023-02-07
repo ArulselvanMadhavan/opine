@@ -59,11 +59,21 @@ let softmax_id = Identifier.make_t "Softmax" ()
 let qnn_id = Identifier.make_t "qnn" ()
 let torch_id = Identifier.make_t "torch" ()
 let bmm_id = Identifier.make_t "bmm" ()
+let apply_id = Identifier.make_t "apply" ()
+let squeeze_id = Identifier.make_t "squeeze" ()
+let output_id = Identifier.make_t "output" ()
+let tiled_gemm_id = Identifier.make_t "TiledGEMM" ()
+let reshape_id = Identifier.make_t "reshape" ()
+let tiled_nd_gemm_id = Identifier.make_t "tiled_nd_gemm" ()
+let matmul_id = Identifier.make_t "matmul" ()
 let init_id = Identifier.make_t "__init__" ()
 let fwd_id = Identifier.make_t "forward" ()
 let super_id = Identifier.make_t "super" ()
 let bool_id = Identifier.make_t "bool" ()
 let envise_id = Identifier.make_t "Envise" ()
+let backend_id = Identifier.make_t backend ()
+let quantized_backward_id = Identifier.make_t quantized_backward ()
+let layer_repeat_id = Identifier.make_t layer_repeat ()
 let assign_param_id = Identifier.make_t "assign_param" ()
 let prot_param_id p = Identifier.make_t ("_" ^ p) ()
 let arg identifier = Argument.make_t ~location:default_loc ~identifier ()
@@ -176,13 +186,85 @@ let not_run_on_envise =
     ()
 ;;
 
-let add_method method_params body =
+let add_method ~name method_params body =
   let location = default_loc in
   let args = List.map method_params ~f:(fun i -> Identifier.make_t i ()) in
   let args = self_id :: args in
   let args = List.map args ~f:arg in
   let args = Arguments.make_t ~args () in
-  Statement.make_functiondef_of_t ~location ~name:bmm_id ~args ~body ()
+  Statement.make_functiondef_of_t ~location ~name ~args ~body ()
+;;
+
+let add_tiled_nd_gemm =
+  let open Statement in
+  let open Expression in
+  let method_params = [ "weight"; "value" ] in
+  let args = List.map method_params ~f:(fun i -> Identifier.make_t i () |> name_l) in
+  let method_args = args in
+  let if_body = [ return_ ~expr:(attr_call ~name:torch_id ~attr:matmul_id ~args ()) ] in
+  let if_not_envise =
+    Statement.make_if_of_t ~location:default_loc ~test:not_run_on_envise ~body:if_body ()
+  in
+  let orig_value_id = Identifier.make_t "orig_value" () in
+  let value_id = Identifier.make_t "value" () in
+  let target = name_l orig_value_id in
+  let value = name_l value_id in
+  let orig_value = make_assign_of_t ~location:default_loc ~targets:[ target ] ~value () in
+  let comparators =
+    [ make_constant_of_t ~location:default_loc ~value:(Constant.make_integer_of_t 1) () ]
+  in
+  let left =
+    attr_l ~value:(name_l orig_value_id) ~attr:(Identifier.make_t "ndim" ()) ()
+  in
+  let is_1d =
+    make_compare_of_t
+      ~location:default_loc
+      ~ops:[ ComparisonOperator.make_eq_of_t () ]
+      ~comparators
+      ~left
+      ()
+  in
+  let int1 = constant ~value:(Constant.make_integer_of_t 1) in
+  let neg1 =
+    make_unaryop_of_t
+      ~location:default_loc
+      ~op:(UnaryOperator.make_usub_of_t ())
+      ~operand:int1
+      ()
+  in
+  let args = [ neg1; int1 ] in
+  let reshape_call = attr_call ~name:value_id ~attr:reshape_id ~args () in
+  let body =
+    [ make_assign_of_t ~location:default_loc ~targets:[ value ] ~value:reshape_call () ]
+  in
+  let check1d = make_if_of_t ~location:default_loc ~test:is_1d ~body () in
+  let args = self_attr ~attr:backend_id :: method_args in
+  let args =
+    List.append
+      args
+      [ self_attr ~attr:quantized_backward_id; self_attr ~attr:layer_repeat_id ]
+  in
+  let value = attr_call ~name:tiled_gemm_id ~attr:apply_id ~args () in
+  let output_assign =
+    make_assign_of_t ~location:default_loc ~targets:[ name_l output_id ] ~value ()
+  in
+  let value = attr_call ~name:output_id ~attr:squeeze_id ~args:[ neg1 ] () in
+  let output1d_assign =
+    make_assign_of_t ~location:default_loc ~targets:[ name_l output_id ] ~value ()
+  in
+  let output_1d =
+    make_if_of_t ~location:default_loc ~test:is_1d ~body:[ output1d_assign ] ()
+  in
+  add_method
+    ~name:tiled_nd_gemm_id
+    method_params
+    [ if_not_envise
+    ; orig_value
+    ; check1d
+    ; output_assign
+    ; output_1d
+    ; return_ ~expr:(name_l output_id)
+    ]
 ;;
 
 let add_bmm =
@@ -194,7 +276,7 @@ let add_bmm =
   in
   let args = self_attr ~attr:(Identifier.make_t backend ()) :: args in
   let bmm_call = func_call ~args ~func:bmm_id () in
-  add_method method_params [ if_not_envise; return_ ~expr:bmm_call ]
+  add_method ~name:bmm_id method_params [ if_not_envise; return_ ~expr:bmm_call ]
 ;;
 
 let add_from_float s body =
@@ -247,7 +329,8 @@ let add_from_float s body =
       Statement.make_return_of_t ~location ~value ()
     in
     let assign_params = ref [] in
-    Hash_set.iter s.linear_params ~f:(fun p ->
+    let linear_params = Hashtbl.find_exn s.linear_params "__init__" in
+    List.iter linear_params ~f:(fun (p, _) ->
       assign_params
         := assign_param qattn_id mod_id p [ "weight"; "bias" ] :: !assign_params);
     let assign_params = List.concat !assign_params in
@@ -265,6 +348,15 @@ let add_from_float s body =
   List.append body [ from_float ]
 ;;
 
+let place_if if_stmt body =
+  let open Statement in
+  match body with
+  (* Check docstring *)
+  | (Expr { value = Constant { value = String _; _ }; _ } as e) :: xs ->
+    e :: if_stmt :: xs
+  | _ -> if_stmt :: body
+;;
+
 let handle_fwd ~cls_name ~func =
   let open Statement in
   match func with
@@ -280,7 +372,8 @@ let handle_fwd ~cls_name ~func =
         ~body:[ return_ ~expr:super_fwd ]
         ()
     in
-    let body = List.append [ if_stmt (* return_ ~expr:super_fwd *) ] body in
+    let body = place_if if_stmt body in
+    (* let body = List.append [ if_stmt ] body in *)
     Statement.make_functiondef_of_t
       ~body
       ~location
@@ -293,24 +386,33 @@ let handle_fwd ~cls_name ~func =
   | _ -> func
 ;;
 
-let transform_bmm stmt =
-  let open Statement in
+let rec transform_expr ~f e =
   let open Expression in
+  match e with
+  | Call { func; location; args; keywords } ->
+    let func = transform_expr ~f func in
+    make_call_of_t ~location ~args ~func ~keywords ()
+  | Attribute { value = Name _; _ } as node -> f node (* end of recursion *)
+  | _ -> e
+;;
+
+let transform_stmt ~f stmt =
+  let open Statement in
   match stmt with
-  | Assign { targets; value = Call { args; _ }; location; type_comment } ->
-    let value = method_call ~attr:bmm_id ~args () in
-    make_assign_of_t ~value ~location ~targets ?type_comment ()
+  | Assign { value; location; targets; type_comment } ->
+    let value = transform_expr ~f value in
+    make_assign_of_t ~location ~value ~targets ?type_comment ()
   | _ -> stmt
 ;;
 
-let transform_bmms func bmm_idxs =
+let transform_method_body ~f func bmm_idxs =
   let open Statement in
   match func with
   | FunctionDef { body; location; args; decorator_list; name; returns; type_comment } ->
     let body = Array.of_list body in
     List.iter bmm_idxs ~f:(fun i ->
       let bmm_stmt = body.(i) in
-      let bmm_stmt = transform_bmm bmm_stmt in
+      let bmm_stmt = transform_stmt ~f bmm_stmt in
       body.(i) <- bmm_stmt);
     let body = Array.to_list body in
     make_functiondef_of_t
@@ -457,6 +559,7 @@ let handle_init ~cls_name ~func =
     let envise_args = List.map envise_info ~f:(fun (a, _, _) -> a) in
     let envise_defaults = List.map envise_info ~f:(fun (_, d, _) -> d) in
     let envise_stmts = List.map envise_info ~f:(fun (_, _, s) -> s) in
+    (* let linear_params = List.map (Hash_set.to_list s.linear_params) ~f: *)
     let body = super_init :: envise_stmts in
     let args =
       Arguments.make_t
@@ -505,6 +608,27 @@ let ep_getters =
   Array.map envise_params_arr ~f:(fun ep -> add_getters ep.param_name) |> Array.to_list
 ;;
 
+let transformations s =
+  let open State in
+  [| s.bmms, transform_method_body ~f:(fun _attr_node -> self_attr ~attr:bmm_id)
+   ; s.softmaxs, transform_smaxs
+   ; ( s.matmuls
+     , transform_method_body ~f:(fun _attr_node -> self_attr ~attr:tiled_nd_gemm_id) )
+  |]
+;;
+
+let apply_transformations s body =
+  let tfs = transformations s in
+  Array.iter tfs ~f:(fun (ht, tfm) ->
+    Hashtbl.iteri ht ~f:(fun ~key ~data ->
+      let method_idx = Hashtbl.find_exn s.method_idx key in
+      let mth = body.(method_idx) in
+      let bmm_idx = data in
+      let mth = tfm mth bmm_idx in
+      body.(method_idx) <- mth));
+  body
+;;
+
 (* body *)
 let rec py_module (s : State.t) m =
   let open Module in
@@ -519,20 +643,7 @@ and statement s stmt =
     let name = Identifier.make_t ("Idiom" ^ Identifier.to_string name) () in
     let cls_name = name_l name in
     (* First do transformations that doesn't affect statement idxs *)
-    (* transform bmms *)
-    Hashtbl.iteri s.bmms ~f:(fun ~key ~data ->
-      let method_idx = Hashtbl.find_exn s.method_idx key in
-      let mth = body.(method_idx) in
-      let bmm_idx = data in
-      let mth = transform_bmms mth bmm_idx in
-      body.(method_idx) <- mth);
-    (* transform softmaxs *)
-    Hashtbl.iteri s.softmaxs ~f:(fun ~key ~data ->
-      let method_idx = Hashtbl.find_exn s.method_idx key in
-      let mth = body.(method_idx) in
-      let smx_idx = data in
-      let mth = transform_smaxs mth smx_idx in
-      body.(method_idx) <- mth);
+    let body = apply_transformations s body in
     (* Update init method *)
     let init_idx = Hashtbl.find_exn s.method_idx "__init__" in
     let func = body.(init_idx) in
@@ -548,7 +659,7 @@ and statement s stmt =
     let immut_base = name_l (Identifier.make_t "ImmutableDtypeMixin" ()) in
     let body = List.append body ep_getters in
     let body = add_from_float s body in
-    let body = List.append body [ add_bmm ] in
+    let body = List.append body [ add_bmm; add_tiled_nd_gemm ] in
     let stmt =
       Statement.make_classdef_of_t
         ~location

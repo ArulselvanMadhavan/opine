@@ -6,6 +6,17 @@ let default_hash_size = 64
 (* Assumptions
    1. Module has only one class; everything is contained inside that class.
 *)
+
+module LinearCallInfo = struct
+  type t =
+    { idx : int
+    ; param : string
+    ; args : Expression.t list
+    ; keywords : Keyword.t list
+    }
+  [@@deriving sexp_of, make]
+end
+
 module State = struct
   type t =
     { methods_count : int
@@ -13,19 +24,21 @@ module State = struct
     ; method_idx : (string, int) Hashtbl.t
     ; init_args : Arguments.t option
     ; members : string Hash_set.t
-    ; linear_params : string Hash_set.t
+    ; linear_params : (string, LinearCallInfo.t list) Hashtbl.t
     ; class_name : string
     ; bmms : (string, int list) Hashtbl.t
     ; softmaxs : (string, int list) Hashtbl.t
+    ; matmuls : (string, int list) Hashtbl.t
     }
   [@@deriving sexp_of, make]
 
   let default =
     let method_idx = Hashtbl.create ~size:default_hash_size (module String) in
     let members = Hash_set.create ~size:default_hash_size (module String) in
-    let linear_params = Hash_set.create ~size:default_hash_size (module String) in
+    let linear_params = Hashtbl.create ~size:default_hash_size (module String) in
     let bmms = Hashtbl.create ~size:default_hash_size (module String) in
     let softmaxs = Hashtbl.create ~size:default_hash_size (module String) in
+    let matmuls = Hashtbl.create ~size:default_hash_size (module String) in
     make_t
       ~methods_count:0
       ~method_idx
@@ -34,6 +47,7 @@ module State = struct
       ~linear_params
       ~bmms
       ~softmaxs
+      ~matmuls
       ()
   ;;
 end
@@ -49,40 +63,33 @@ let is_self_attr e =
   | _ -> None
 ;;
 
-let is_bmm s =
-  let open Statement in
-  let open Expression in
-  match s with
-  | Assign { value = Call { func = Attribute { value = Name { id; _ }; attr; _ }; _ }; _ }
-    ->
-    String.equal (Identifier.to_string id) "torch"
-    && String.equal (Identifier.to_string attr) "bmm"
-  | _ -> false
+let loop_until ~f xs =
+  Base.List.fold_until
+    xs
+    ~init:false
+    ~f:(fun _acc a ->
+      let result = f a in
+      if result then Continue_or_stop.Stop true else Continue_or_stop.Continue false)
+    ~finish:(fun _ -> false)
 ;;
 
-let rec is_softmax s =
+let rec search_attr ~search s =
   let open Statement in
   match s with
-  | Assign { value; _ } -> is_softmax_expr value
+  | Assign { value; _ } -> search_expr ~search value
   | If { body; orelse; _ } ->
-    let loop_until xs =
-      Base.List.fold_until
-        xs
-        ~init:false
-        ~f:(fun _acc a ->
-          let result = is_softmax a in
-          if result then Continue_or_stop.Stop true else Continue_or_stop.Continue false)
-        ~finish:(fun _ -> false)
-    in
-    loop_until body || loop_until orelse
+    let f = search_attr ~search in
+    loop_until ~f body || loop_until ~f orelse
   | _ -> false
 
-and is_softmax_expr e =
+and search_expr ~search e =
   let open Expression in
   match e with
-  | Call { func; _ } -> is_softmax_expr func
-  | Attribute { attr; _ } when String.equal (Identifier.to_string attr) "softmax" -> true
-  | Attribute { value; _ } -> is_softmax_expr value
+  | Call { func; args; _ } ->
+    let f = search_expr ~search in
+    search_expr ~search func || loop_until ~f args
+  | Attribute { attr; _ } when String.(Identifier.to_string attr = search) -> true
+  | Attribute { value; _ } -> search_expr ~search value
   | _ -> false
 ;;
 
@@ -93,6 +100,27 @@ let traverse_and_collect name body ~f ht =
       Hashtbl.update ht (Identifier.to_string name) ~f:(fun xs ->
         Base.Option.fold xs ~init:[ i ] ~f:(fun _ xs -> List.cons i xs))
     else ())
+;;
+
+let extract_param_name s =
+  let open Statement in
+  match s with
+  | Assign { targets = [ Attribute { value = Name { id; _ }; attr; _ } ]; _ }
+    when String.(Identifier.to_string id = "self") -> Some (Identifier.to_string attr)
+  | _ -> None
+;;
+
+let extract_linear_args s =
+  let open Statement in
+  let open Expression in
+  let extract_arg e =
+    match e with
+    | Call { args; keywords; _ } -> Some (args, keywords)
+    | _ -> None
+  in
+  match s with
+  | Assign { value; _ } -> extract_arg value
+  | _ -> None
 ;;
 
 let rec py_module s m =
@@ -109,9 +137,8 @@ and statement (s : State.t) stmt =
       let s = statement s stmt in
       { s with statement_count = s.statement_count + 1 })
   | FunctionDef { body; name; args; _ } ->
-    Hashtbl.update s.method_idx (Identifier.to_string name) ~f:(fun _ ->
-      s.statement_count);
     let method_name = Identifier.to_string name in
+    Hashtbl.update s.method_idx method_name ~f:(fun _ -> s.statement_count);
     let s =
       { s with
         methods_count = s.methods_count + 1
@@ -120,28 +147,24 @@ and statement (s : State.t) stmt =
       }
     in
     (* Update bmms *)
-    traverse_and_collect name body ~f:is_bmm s.bmms;
+    traverse_and_collect name body ~f:(search_attr ~search:"bmm") s.bmms;
     (* Update softmax stats *)
-    traverse_and_collect name body ~f:is_softmax s.softmaxs;
+    traverse_and_collect name body ~f:(search_attr ~search:"softmax") s.softmaxs;
+    (* update matmuls *)
+    traverse_and_collect name body ~f:(search_attr ~search:"matmul") s.matmuls;
+    (* update linear params *)
+    let linear_params =
+      List.filter_mapi body ~f:(fun idx stmt ->
+        let b = search_attr ~search:"Linear" stmt in
+        if b
+        then
+          let open Option.Let_syntax in
+          let%bind name = extract_param_name stmt in
+          let%map args, keywords = extract_linear_args stmt in
+          LinearCallInfo.make_t ~idx ~param:name ~args ~keywords ()
+        else None)
+    in
+    Hashtbl.update s.linear_params method_name ~f:(fun _ -> linear_params);
     exec_list statement s body
-  | Assign { targets; value; _ } ->
-    let open Expression in
-    let self_params = Base.List.map targets ~f:is_self_attr in
-    let self_params = Base.List.filter_opt self_params in
-    Base.List.iter self_params ~f:(fun p -> Hash_set.add s.members p);
-    (match value with
-     | Call { func = Attribute { value = Name { id; _ }; attr; _ }; _ }
-       when String.equal (Identifier.to_string id) "nn"
-            && String.equal (Identifier.to_string attr) "Linear" ->
-       let tgt = List.hd targets in
-       let f s tgt =
-         let f s p =
-           Hash_set.add s.linear_params p;
-           s
-         in
-         Base.Option.fold (is_self_attr tgt) ~init:s ~f
-       in
-       Base.Option.fold tgt ~init:s ~f
-     | _ -> s)
   | _ -> s
 ;;

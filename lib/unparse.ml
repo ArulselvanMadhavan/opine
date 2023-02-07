@@ -142,7 +142,13 @@ let comp_op o =
   | NotEq -> "!="
   | IsNot -> "is not"
   | Eq -> "=="
-  | _ -> noop
+  | Is -> "is"
+  | Gt -> ">"
+  | Gte -> ">="
+  | Lt -> "<"
+  | Lte -> "<="
+  | In -> "in"
+  | NotIn -> "not in"
 ;;
 
 let unary_op o =
@@ -168,7 +174,15 @@ let bin_op o =
   | Mult -> "*"
   | FloorDiv -> "//"
   | Pow -> "**"
-  | _ -> noop
+  | Sub -> "-"
+  | MatMult -> "@"
+  | Div -> "/"
+  | Mod -> "%"
+  | LShift -> "<<"
+  | RShift -> ">>"
+  | BitOr -> "|"
+  | BitAnd -> "&"
+  | BitXor -> "^"
 ;;
 
 let repr str =
@@ -188,7 +202,7 @@ let constant c =
   let open Constant in
   match c with
   | Integer i -> Int.to_string i
-  | String s -> "\"" ^ repr s ^ "\""
+  | String s -> repr s
   | Float f -> Float.to_string f
   | True | False | None -> Sexplib0.Sexp.to_string (Constant.sexp_of_t c)
   | _ -> noop
@@ -290,6 +304,14 @@ let write_docstring s = function
     let s = fill s "" in
     _write_str_avoiding_backslashes s doc ~quote_types:multi_quotes
   | None -> s
+;;
+
+let set_precendence s prec nodes =
+  let open State in
+  Array.iter
+    (fun node -> Base.Hashtbl.update s.expr_precedences node ~f:(fun _ -> prec))
+    nodes;
+  s
 ;;
 
 let rec arg (s : State.t) a =
@@ -492,6 +514,18 @@ and statement (s : State.t) stmt =
     s
   | Return { value; _ } ->
     Base.Option.fold value ~init:(fill s "return") ~f:(fun s a -> expr (s ++= " ") a)
+  | Pass _ -> fill s "pass"
+  | Break _ -> fill s "break"
+  | Continue _ -> fill s "continue"
+  | AugAssign { target; op; value; _ } ->
+    let s = fill s "" in
+    let s = expr s target in
+    let s = s ++= (" " ^ bin_op op ^ "= ") in
+    expr s value
+  | Assert { test; msg; _ } ->
+    let s = fill s "assert " in
+    let s = expr s test in
+    Base.Option.fold msg ~init:s ~f:(fun s m -> expr (s ++= ", ") m)
   | _x -> noop_state s
 
 and expr (s : State.t) e =
@@ -532,6 +566,7 @@ and expr (s : State.t) e =
       expr s right
     in
     require_parens s op_prec node_prec f
+  | Constant { value = String no_quote_str; _ } -> s ++= ("\"" ^ no_quote_str ^ "\"")
   | Constant { value; _ } -> s ++= constant value
   | Lambda { args; body; _ } as node ->
     let node_prec =
@@ -585,13 +620,13 @@ and expr (s : State.t) e =
     in
     let s = delimit s "(" ")" process_call in
     s
-  | Compare { left; ops; comparators; _ } ->
+  | Compare { left; ops; comparators; _ } as node ->
     let node_prec =
-      Option.value (Hashtbl.find s.expr_precedences left) ~default:Precedence.Test
+      Option.value (Hashtbl.find s.expr_precedences node) ~default:Precedence.Test
     in
     let f s =
-      Base.Hashtbl.update s.expr_precedences left ~f:(fun _ ->
-        Base.Option.value_exn (Precedence.next Precedence.Cmp));
+      let next_prec = Precedence.(Option.value_exn (next Test)) in
+      let s = set_precendence s next_prec (Array.of_list (left :: comparators)) in
       let s = expr s left in
       let zipped = Base.List.zip_exn ops comparators in
       Base.List.fold zipped ~init:s ~f:(fun s oe ->
@@ -699,6 +734,28 @@ and expr (s : State.t) e =
     let s = s ++= "*" in
     Base.Hashtbl.set ~key:value ~data:Precedence.Expr s.expr_precedences;
     expr s value
+  | Slice { lower; upper; step; _ } ->
+    let process_expr e s = Option.fold e ~init:s ~f:(fun s l -> expr s l) in
+    let s = process_expr lower s in
+    let s = s ++= ":" in
+    let s = process_expr upper s in
+    Option.fold step ~init:s ~f:(fun s e -> expr (s ++= ":") e)
+  | IfExp { test; body; orelse; _ } as node ->
+    let node_prec =
+      Option.value (Hashtbl.find s.expr_precedences node) ~default:Precedence.Test
+    in
+    let contents s =
+      let next_prec = Precedence.(Option.value_exn @@ next Test) in
+      let s = set_precendence s next_prec [| body; test |] in
+      let s = expr s body in
+      let s = s ++= " if " in
+      let s = expr s test in
+      let s = s ++= " else " in
+      let s = set_precendence s next_prec [| orelse |] in
+      let s = expr s orelse in
+      s
+    in
+    require_parens s Precedence.Test node_prec contents
   | _ -> noop_state s
 
 and py_module s m =

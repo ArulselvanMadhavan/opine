@@ -1,12 +1,37 @@
+# def tiled_nd_gemm(self, weight, value):
+#     """Tiled GEMM allowing 1-d inputs.
+#     Arguments:
+#         weight (torch.Tensor): a 3d or 4d weight tensor
+#         value (torch.Tensor): a value vector or matrix that's shape
+#             compatible with matrix multiplication along the last two
+#             dimensions of the weight matrix
+#     """
+#     if not self.run_on_envise:
+#         return torch.matmul(weight, value)
+
+#     orig_value = value
+#     if orig_value.ndim == 1:
+#         value = value.reshape(-1, 1)
+#     output = TiledGEMM.apply(
+#         self.backend,
+#         weight,
+#         value,
+#         self.quantized_backward,
+#         self.layer_repeat,
+#     )
+#     if orig_value.ndim == 1:
+#         output = output.squeeze(-1)
+#     return output
 class Test():
     def __init__(self):
         pass
     def forward(e):
-        if attn_weights.dtype == torch.float16:
-            attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(torch.float16)
-        else:
-            attn_weights = nn.functional.softmax(attn_weights, dim=-1)
-#         attn_weights = torch.nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(torch.float16)
+        attn_output = unshape(torch.matmul(attn_weights, value_states)) 
+        #         attn_output = torch.bmm(attn_probs, value_states)
+#         attn_output = unshape(torch.matmul(attn_weights, value_states))
+#         attn_weights = nn.functional.softmax(scores.float(), dim=-1).type_as(
+#             scores
+#         )         
 # qnn.Softmax(
 #             dim=-1,
 #             run_on_envise=run_on_envise,
