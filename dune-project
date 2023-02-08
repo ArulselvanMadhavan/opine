@@ -1,26 +1,24 @@
 (lang dune 3.6)
 
 (name opine)
-
+(version 0.1.0)
 (generate_opam_files true)
 
 (source
- (github username/reponame))
+ (github ArulselvanMadhavan/opine))
 
-(authors "Author Name")
-
-(maintainers "Maintainer Name")
-
-(license LICENSE)
+(authors "Arulselvan Madhavan")
+(maintainers "arulselvan1234@gmail.com")
+(license MIT)
 
 (documentation https://url/to/documentation)
 
 (package
  (name opine)
- (synopsis "A short synopsis")
- (description "A longer description")
- (depends ocaml dune)
+ (synopsis "Python AST unparse implementation in OCaml")
+ (description "Opine is an OCaml library that unparses the python AST back to python code.")
+ (depends ocaml dune ppx_hash ppx_compare ppx_sexp_conv ppx_make ppx_deriving pyre-ast stdio base uutf cmdliner sexplib)
  (tags
-  (topics "to describe" your project)))
+  (topics ocaml python ast)))
 
 ; See the complete stanza docs at https://dune.readthedocs.io/en/stable/dune-files.html#dune-project
