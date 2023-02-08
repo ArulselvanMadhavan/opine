@@ -1,2 +1,27 @@
-* OPTAttention
-[[https://github.com/huggingface/transformers/blob/main/src/transformers/models/opt/modeling_opt.py#L120][OPT]]
+* Opine
+Opine is an OCaml library that unparses the python AST produced by
+pyre-ast library back to python source code.
+
+** Why would this be useful?
+I find this to be useful to do large scale python code transformations
+in OCaml.
+
+** Can this be done in Python itself?
+Yes. But if you are looking for an OCaml library to do this, you
+probably already know why you are looking. Maybe this will help. I
+needed something like this to maintain python source code transformations.
+
+** How it works?
+Fairly simple. The pyre-ast module provides a concrete AST
+representation of the python AST. The unparse module walks through the
+ast recursively while maintaining some state information and converts
+the AST back to python code. It doesn't use the visitor pattern.
+Everything is pure, simple functions.
+
+** How to run?
+#+begin_src bash
+dune exec opine -- module expr.py
+#+end_src
+
+** Credits
+This library exists because of [[https://github.com/grievejia/pyre-ast][pyre-ast]]
