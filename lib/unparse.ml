@@ -87,18 +87,25 @@ module State = struct
   open Base
 
   type t =
-    { source : string
+    { source : Buffer.t
     ; indent : int
     ; expr_precedences : (Expression.t, Precedence.t) Hashtbl.t
     ; avoid_backslashes : bool
     }
   [@@deriving make]
 
-  let default = { source = ""; indent = 0; expr_precedences; avoid_backslashes = false }
-  let ( ++= ) s str = { s with source = s.source ^ str }
+  let default () =
+    { source = Buffer.create 64; indent = 0; expr_precedences; avoid_backslashes = false }
+  ;;
+
+  let ( ++= ) s str =
+    Buffer.add_string s.source str;
+    s
+  ;;
 
   let block s f =
-    let s = { s with source = s.source ^ ":" } in
+    Buffer.add_char s.source ':';
+    (* let s = { s with source = s.source ^ ":" } in *)
     let s = { s with indent = s.indent + 1 } in
     let s = f s in
     { s with indent = s.indent - 1 }
@@ -118,7 +125,7 @@ module State = struct
     delimit_if s "(" ")" (Precedence.compare node_prec eval_prec > 0)
   ;;
 
-  let buffered f = f default
+  let buffered f = f (default ())
 end
 
 exception CauseWithoutException of string
@@ -127,7 +134,7 @@ exception ValueError of string
 
 let noop = "noop"
 let noop_state (s : State.t) = State.(s ++= noop)
-let maybe_newline (s : State.t) = if Base.String.is_empty s.source then "" else "\n"
+let maybe_newline (s : State.t) = if Buffer.length s.source = 0 then "" else "\n"
 
 let fill (s : State.t) text =
   let newline = maybe_newline s in
@@ -219,6 +226,8 @@ let multi_quotes_ht =
 ;;
 
 let _str_literal_helper str escape_special_whitespace quote_types =
+  Printf.printf "QT:%d\n" (Array.length quote_types);
+  Stdio.Out_channel.flush Stdio.stdout;
   let is_printable c =
     let c = Char.code c in
     32 <= c && c < 127
@@ -246,6 +255,8 @@ let _str_literal_helper str escape_special_whitespace quote_types =
   then (
     let str = repr str in
     let sq = String.get str 0 in
+    Stdio.printf "Str:%d\n" (String.length str);
+    Stdio.Out_channel.flush stdout;
     let quote =
       Base.Array.find_exn quote_types ~f:(fun q ->
         Option.is_some (Base.String.find q ~f:(fun qq -> sq = qq)))
@@ -275,6 +286,8 @@ let _str_literal_helper str escape_special_whitespace quote_types =
 
 let _write_str_avoiding_backslashes ?(quote_types = all_quotes) s doc =
   let open State in
+  Printf.printf "doc len:%s\n" doc;
+  Stdio.Out_channel.flush Stdio.stdout;
   let doc, quote_types = _str_literal_helper doc false quote_types in
   let quote_type = quote_types.(0) in
   s ++= Printf.sprintf "%s%s%s" quote_type doc quote_type
@@ -641,11 +654,11 @@ and expr (s : State.t) e =
     then (
       let f s = _write_fstring_inner s node in
       let buffer = buffered f in
-      _write_str_avoiding_backslashes s buffer.source)
+      _write_str_avoiding_backslashes s (Buffer.contents buffer.source))
     else (
       let f e =
         let buffer = buffered (fun s -> _write_fstring_inner s e) in
-        ( buffer.source
+        ( Buffer.contents buffer.source
         , match e with
           | Constant _ -> true
           | _ -> false )
@@ -667,14 +680,15 @@ and expr (s : State.t) e =
       s ++= (quote_type ^ String.concat new_fstring_parts ^ quote_type))
   | FormattedValue { value; conversion; format_spec; _ } ->
     let unparse_inner inner =
-      let s = { State.default with avoid_backslashes = true } in
+      let s = default () in
+      let s = { s with avoid_backslashes = true } in
       Base.Hashtbl.update s.expr_precedences inner ~f:(fun _ ->
         Option.value_exn (Precedence.next Precedence.Test));
       expr s inner
     in
     let f s =
       let e = unparse_inner value in
-      let src = e.source in
+      let src = Buffer.contents e.source in
       if Base.String.contains src '\\'
       then raise (ValueError "Unable to avoid backslash in f-string expression part");
       let s = if String.equal (Base.String.prefix src 1) "{" then s ++= " " else s in
