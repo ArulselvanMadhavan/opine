@@ -12,7 +12,7 @@ homepage: "https://github.com/ArulselvanMadhavan/opine"
 doc: "https://url/to/documentation"
 bug-reports: "https://github.com/ArulselvanMadhavan/opine/issues"
 depends: [
-  "ocaml"
+  "ocaml" {>= "4.13.0"}
   "dune" {>= "3.6"}
   "ppx_hash"
   "ppx_compare"
@@ -21,7 +21,7 @@ depends: [
   "ppx_deriving"
   "pyre-ast"
   "stdio"
-  "base"
+  "base" {>= "0.15.0"}
   "uutf"
   "cmdliner"
   "sexplib"
