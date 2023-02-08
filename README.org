@@ -19,6 +19,8 @@ the AST back to python code. It doesn't use the visitor pattern.
 Everything is pure, simple functions.
 
 ** How to run?
+Pass a python file or module as input and have it generate the python
+ast and back.
 #+begin_src bash
 dune exec opine -- module expr.py
 #+end_src
