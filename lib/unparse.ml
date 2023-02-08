@@ -94,8 +94,14 @@ module State = struct
     }
   [@@deriving make]
 
+  let default_hash_size = 64
+
   let default () =
-    { source = Buffer.create 64; indent = 0; expr_precedences; avoid_backslashes = false }
+    { source = Buffer.create default_hash_size
+    ; indent = 0
+    ; expr_precedences
+    ; avoid_backslashes = false
+    }
   ;;
 
   let ( ++= ) s str =
