@@ -25,6 +25,7 @@ depends: [
   "uutf"
   "cmdliner"
   "sexplib"
+  "ppx_let"
   "odoc" {with-doc}
 ]
 build: [
