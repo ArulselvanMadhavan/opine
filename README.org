@@ -18,12 +18,54 @@ ast recursively while maintaining some state information and converts
 the AST back to python code. It doesn't use the visitor pattern.
 Everything is pure, simple functions.
 
-** How to run?
-Pass a python file or module as input and have it generate the python
-ast and back.
+** Example transformation
+If you wanted to add getters and setters to all the members in the
+class
 #+begin_src bash
-dune exec opine -- module expr.py
+dune exec examples -- module test.py
 #+end_src
+*** Input file
+#+begin_src python
+class Sample():
+    def __init__(self, embed_dim, backend=None):
+        self.embed_dim = embed_dim
+        self.backend = backend
+        
+    def forward(self, weight, value):
+        return torch.bmm(weight, value)
+#+end_src
+*** Output file
+#+begin_src python
+class Sample:
+    def __init__(self, embed_dim, backend=None):
+        self.embed_dim = embed_dim
+        self.backend = backend
+
+    def forward(self, weight, value):
+        return torch.bmm(weight, value)
+
+    @property
+    def embed_dim(self):
+        return self._embed_dim
+
+    @property
+    def backend(self):
+        return self._backend
+
+    @embed_dim.setter
+    def embed_dim(self, embed_dim):
+        self._embed_dim = embed_dim
+
+    @backend.setter
+    def backend(self, backend):
+        self._backend = backend
+#+end_src
+** How to run the unparser?
+ Pass a python file or module as input and have it generate the python
+ ast and back.
+ #+begin_src bash
+ dune exec opine -- module expr.py
+ #+end_src
 
 ** Credits
 This library exists because of [[https://github.com/grievejia/pyre-ast][pyre-ast]]

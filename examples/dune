@@ -1,0 +1,6 @@
+(executable
+ (public_name examples)
+ (name main)
+ (libraries pyre-ast opine cmdliner)
+ (preprocess
+  (pps ppx_sexp_conv ppx_make ppx_let)))
