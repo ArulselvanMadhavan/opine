@@ -712,7 +712,7 @@ and statement s stmt =
   | ClassDef { body; location; name; keywords; decorator_list; _ } ->
     let body = Array.of_list body in
     let orig_base = name_l name in
-    let name = Identifier.make_t ("Idiom" ^ Identifier.to_string name) () in
+    let name = Identifier.make_t (Identifier.to_string name) () in
     let cls_name = name_l name in
     (* First do transformations that doesn't affect statement idxs *)
     let body = apply_transformations s body in
