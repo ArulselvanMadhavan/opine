@@ -1,7 +1,7 @@
 (lang dune 3.6)
 
 (name opine)
-(version 0.1.2)
+(version 0.1.3)
 (generate_opam_files true)
 
 (source
@@ -17,7 +17,7 @@
  (name opine)
  (synopsis "Python AST unparse implementation in OCaml")
  (description "Opine is an OCaml library that unparses the python AST back to python code.")
- (depends (ocaml (>= 4.13.0)) dune ppx_hash ppx_compare ppx_sexp_conv ppx_make ppx_deriving pyre-ast stdio (base (>= 0.15.0)) uutf cmdliner sexplib ppx_let)
+ (depends (ocaml (>= 4.14.0)) dune ppx_hash ppx_compare ppx_sexp_conv ppx_make ppx_deriving pyre-ast stdio (base (>= 0.15.0)) uutf cmdliner sexplib ppx_let)
  (tags
   (topics ocaml python ast)))
 
