@@ -12,7 +12,7 @@ let parse ~f content =
   Parser.with_context (fun context ->
     f ~context content
     |> Result.map_error
-         (fun { Parser.Error.message; line; column; end_line; end_column } ->
+         (fun Parser.Error.({ message; line; column; end_line; end_column }) ->
          Format.sprintf
            "Parse error at line %d, column %d to line %d, column %d: %s"
            line
