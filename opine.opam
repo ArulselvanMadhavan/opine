@@ -9,7 +9,6 @@ authors: ["Arulselvan Madhavan"]
 license: "MIT"
 tags: ["topics" "ocaml" "python" "ast"]
 homepage: "https://github.com/ArulselvanMadhavan/opine"
-doc: "https://url/to/documentation"
 bug-reports: "https://github.com/ArulselvanMadhavan/opine/issues"
 depends: [
   "ocaml" {>= "4.14.0"}

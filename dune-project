@@ -11,8 +11,6 @@
 (maintainers "arulselvan1234@gmail.com")
 (license MIT)
 
-(documentation https://url/to/documentation)
-
 (package
  (name opine)
  (synopsis "Python AST unparse implementation in OCaml")
