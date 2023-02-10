@@ -64,7 +64,7 @@ class Sample:
  Pass a python file or module as input and have it generate the python
  ast and back.
  #+begin_src bash
- dune exec opine -- module expr.py
+ dune exec bin/main.exe -- module expr.py
  #+end_src
 
 ** Credits
