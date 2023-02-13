@@ -18,7 +18,7 @@ depends: [
   "ppx_sexp_conv"
   "ppx_make"
   "ppx_deriving"
-  "pyre-ast" {>= "0.6.0"}
+  "pyre-ast" {>= "0.1.6"}
   "stdio"
   "base" {>= "0.15.0"}
   "uutf"
