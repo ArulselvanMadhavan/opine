@@ -27,6 +27,7 @@ depends: [
   "ppx_let"
   "odoc" {with-doc}
 ]
+available: os != "macos"  
 build: [
   ["dune" "subst"] {dev}
   [
