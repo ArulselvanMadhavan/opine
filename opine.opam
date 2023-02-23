@@ -22,12 +22,11 @@ depends: [
   "stdio"
   "base" {>= "0.15.0"}
   "uutf"
-  "cmdliner"
+  "cmdliner" {>= "1.1.1"}
   "sexplib"
   "ppx_let"
   "odoc" {with-doc}
 ]
-available: os != "macos"  
 build: [
   ["dune" "subst"] {dev}
   [
